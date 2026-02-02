@@ -126,6 +126,28 @@ export class Agent {
       });
     }
 
+    // 如果达到 maxSteps 但 LLM 还想调用工具，强制让它生成总结
+    if (response.stop_reason === 'tool_use') {
+      console.log('\n⚠️ Reached max steps, requesting final summary...');
+
+      // 添加当前响应到历史
+      this.conversationHistory.push({ role: 'assistant', content: response.content });
+
+      // 告诉 LLM 停止使用工具，生成总结
+      this.conversationHistory.push({
+        role: 'user',
+        content: 'You have reached the maximum number of tool calls. Please summarize what you have found and provide your final response without using any more tools.',
+      });
+
+      // 不带工具的请求，强制生成文本回复
+      response = await client.messages.create({
+        model: this.config.llmConfig.model,
+        max_tokens: 4096,
+        system: this.getSystemPrompt(),
+        messages: this.conversationHistory,
+      });
+    }
+
     // 保存助手回复到历史
     this.conversationHistory.push({ role: 'assistant', content: response.content });
 

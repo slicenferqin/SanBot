@@ -106,7 +106,7 @@ async function interactiveMode(config: any) {
 
   const agent = new Agent({
     llmConfig: config.llm,
-    maxSteps: 10,
+    maxSteps: 20,
   });
 
   const prompt = () => {
