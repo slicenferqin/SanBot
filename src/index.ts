@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import * as readline from 'readline';
 import { Agent } from './agent.ts';
 import { loadConfig, initConfig } from './config/loader.ts';
 
@@ -13,12 +14,17 @@ SanBot - Autonomous Super-Assistant
 Usage:
   sanbot init                    Initialize configuration
   sanbot "your message"          Single execution mode
-  sanbot                         Interactive mode (coming soon)
+  sanbot                         Interactive mode
 
 Examples:
   sanbot init
   sanbot "list files in current directory"
   sanbot "read package.json and show me the dependencies"
+
+Interactive Commands:
+  /exit, /quit, /q               Exit interactive mode
+  /clear                         Clear conversation history
+  /help                          Show help
 
 Environment Variables:
   SANBOT_API_KEY                 API key for LLM provider
@@ -60,11 +66,8 @@ async function main() {
     const message = args.join(' ');
     await singleExecution(config, message);
   } else {
-    // 交互模式（暂未实现）
-    console.log('❌ Interactive mode not implemented yet.');
-    console.log('💡 Use: sanbot "your message"');
-    printUsage();
-    process.exit(1);
+    // 交互模式
+    await interactiveMode(config);
   }
 }
 
@@ -87,6 +90,80 @@ async function singleExecution(config: any, message: string) {
     console.error('\n❌ Error:', JSON.stringify(error, null, 2));
     process.exit(1);
   }
+}
+
+/**
+ * 交互模式
+ */
+async function interactiveMode(config: any) {
+  console.log('🤖 SanBot Interactive Mode');
+  console.log('Type /help for commands, /exit to quit.\n');
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  const agent = new Agent({
+    llmConfig: config.llm,
+    maxSteps: 10,
+  });
+
+  const prompt = () => {
+    rl.question('\x1b[36m❯\x1b[0m ', async (input) => {
+      const trimmed = input.trim();
+
+      // 空输入
+      if (!trimmed) {
+        prompt();
+        return;
+      }
+
+      // 处理命令
+      if (trimmed.startsWith('/')) {
+        const cmd = trimmed.toLowerCase();
+        if (cmd === '/exit' || cmd === '/quit' || cmd === '/q') {
+          console.log('👋 Goodbye!');
+          rl.close();
+          process.exit(0);
+        } else if (cmd === '/help') {
+          printUsage();
+          prompt();
+          return;
+        } else if (cmd === '/clear') {
+          console.clear();
+          console.log('🤖 SanBot Interactive Mode');
+          console.log('Type /help for commands, /exit to quit.\n');
+          prompt();
+          return;
+        } else {
+          console.log(`Unknown command: ${trimmed}`);
+          prompt();
+          return;
+        }
+      }
+
+      // 执行对话
+      console.log('\n🤖 Thinking...\n');
+      try {
+        const response = await agent.chat(trimmed);
+        console.log(response);
+        console.log();
+      } catch (error: any) {
+        console.error('❌ Error:', error.message);
+      }
+
+      prompt();
+    });
+  };
+
+  // 处理 Ctrl+C
+  rl.on('close', () => {
+    console.log('\n👋 Goodbye!');
+    process.exit(0);
+  });
+
+  prompt();
 }
 
 // 运行主函数

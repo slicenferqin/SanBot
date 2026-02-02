@@ -4,7 +4,6 @@
   "description": "Autonomous super-assistant with self-tooling capabilities",
   "module": "src/index.ts",
   "type": "module",
-  "private": true,
   "bin": {
     "sanbot": "./src/index.ts"
   },
