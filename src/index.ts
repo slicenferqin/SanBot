@@ -131,9 +131,10 @@ async function interactiveMode(config: any) {
           prompt();
           return;
         } else if (cmd === '/clear') {
+          agent.clearHistory();
           console.clear();
           console.log('🤖 SanBot Interactive Mode');
-          console.log('Type /help for commands, /exit to quit.\n');
+          console.log('Conversation cleared. Type /help for commands, /exit to quit.\n');
           prompt();
           return;
         } else {

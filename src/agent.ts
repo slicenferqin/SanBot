@@ -18,6 +18,9 @@ export interface AgentConfig {
 export class Agent {
   private toolRegistry;
   private config: AgentConfig;
+  // 对话历史 - 支持多轮对话
+  private conversationHistory: Anthropic.MessageParam[] = [];
+  private openaiHistory: CoreMessage[] = [];
 
   constructor(config: AgentConfig) {
     this.config = config;
@@ -25,7 +28,15 @@ export class Agent {
   }
 
   /**
-   * 执行单次对话
+   * 清空对话历史
+   */
+  clearHistory(): void {
+    this.conversationHistory = [];
+    this.openaiHistory = [];
+  }
+
+  /**
+   * 执行对话（支持多轮上下文）
    */
   async chat(userMessage: string): Promise<string> {
     const { provider } = this.config.llmConfig;
@@ -54,15 +65,14 @@ export class Agent {
       input_schema: t.schema as Anthropic.Tool['input_schema'],
     }));
 
-    const messages: Anthropic.MessageParam[] = [
-      { role: 'user', content: userMessage },
-    ];
+    // 添加用户消息到历史
+    this.conversationHistory.push({ role: 'user', content: userMessage });
 
     let response = await client.messages.create({
       model: this.config.llmConfig.model,
       max_tokens: 4096,
       system: this.getSystemPrompt(),
-      messages,
+      messages: this.conversationHistory,
       tools,
     });
 
@@ -77,7 +87,7 @@ export class Agent {
         (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
       );
 
-      messages.push({ role: 'assistant', content: response.content });
+      this.conversationHistory.push({ role: 'assistant', content: response.content });
 
       const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
@@ -105,16 +115,19 @@ export class Agent {
         }
       }
 
-      messages.push({ role: 'user', content: toolResults });
+      this.conversationHistory.push({ role: 'user', content: toolResults });
 
       response = await client.messages.create({
         model: this.config.llmConfig.model,
         max_tokens: 4096,
         system: this.getSystemPrompt(),
-        messages,
+        messages: this.conversationHistory,
         tools,
       });
     }
+
+    // 保存助手回复到历史
+    this.conversationHistory.push({ role: 'assistant', content: response.content });
 
     const textBlocks = response.content.filter(
       (block): block is Anthropic.TextBlock => block.type === 'text'
@@ -151,13 +164,19 @@ export class Agent {
       };
     }
 
+    // 添加用户消息到历史
+    this.openaiHistory.push({ role: 'user', content: userMessage });
+
     const result = await generateText({
       model,
-      messages: [{ role: 'user', content: userMessage }],
+      messages: this.openaiHistory,
       tools,
       maxSteps: this.config.maxSteps || 10,
       system: this.getSystemPrompt(),
     });
+
+    // 保存助手回复到历史
+    this.openaiHistory.push({ role: 'assistant', content: result.text });
 
     return result.text;
   }
