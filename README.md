@@ -43,9 +43,98 @@ SanBot:     用户请求 → 自主思考 → 识别能力缺口 → 创建新�
 - [Agent 创新方向分析](docs/Agent-Innovation-Directions_opus4.5.md)
 - [OpenClaw 分析报告](docs/OpenClaw-Analysis-Report_opus4.5.md)
 
+## 快速开始
+
+### 安装
+
+```bash
+# 安装 Bun (如果尚未安装)
+curl -fsSL https://bun.sh/install | bash
+
+# 克隆并安装依赖
+git clone https://github.com/your-username/SanBot.git
+cd SanBot
+bun install
+```
+
+### 配置
+
+创建配置文件 `~/.sanbot/config.json`:
+
+```json
+{
+  "llm": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-20250514",
+    "apiKey": "your-api-key",
+    "baseUrl": "https://api.anthropic.com"
+  }
+}
+```
+
+支持的 provider:
+- `anthropic` - Anthropic Claude (使用原生 SDK)
+- `openai` - OpenAI GPT 系列
+- `openai-compatible` - 任何 OpenAI 兼容的 API (第三方中转站等)
+
+### 使用
+
+```bash
+bun run src/cli.ts "你的问题或任务"
+```
+
+## 内置工具
+
+| 工具 | 描述 |
+|------|------|
+| `exec` | 执行 shell 命令 |
+| `read_file` | 读取文件内容（支持分页） |
+| `write_file` | 写入或追加文件 |
+| `edit_file` | 按行号或搜索替换精确编辑文件 |
+| `list_dir` | 列出目录内容 |
+
+## Self-Tooling
+
+当 Agent 遇到能力缺口时，可以动态创建新工具：
+
+| 工具 | 描述 |
+|------|------|
+| `create_tool` | 创建 Python/Bash 脚本保存到 `~/.sanbot/tools/` |
+| `list_tools` | 列出所有自定义工具 |
+| `run_tool` | 运行自定义工具 |
+
+示例：Agent 需要解析 JSON 时，会自动创建 `json_extract` 工具并保存供后续使用。
+
+## 项目结构
+
+```
+src/
+├── agent.ts          # 核心 Agent (多服务商支持)
+├── cli.ts            # CLI 入口
+├── config/
+│   ├── loader.ts     # 配置加载
+│   └── types.ts      # 类型定义
+└── tools/
+    ├── index.ts      # 工具注册
+    ├── registry.ts   # 工具注册表
+    ├── exec.ts       # Shell 执行
+    ├── read-file.ts  # 文件读取
+    ├── write-file.ts # 文件写入
+    ├── edit-file.ts  # 文件编辑
+    ├── list-dir.ts   # 目录列表
+    └── self-tool.ts  # Self-Tooling
+```
+
 ## 状态
 
-🚧 **开发中** - 正在规划 MVP
+✅ **MVP 完成** - 核心功能已实现
+
+- [x] 多服务商 LLM 支持
+- [x] 内置工具 (exec, read_file, write_file, edit_file, list_dir)
+- [x] Self-Tooling (create_tool, list_tools, run_tool)
+- [ ] 交互模式 (持续对话)
+- [ ] 三层记忆系统
+- [ ] 元认知监控
 
 ## 致谢
 

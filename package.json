@@ -1,0 +1,28 @@
+{
+  "name": "sanbot",
+  "version": "0.1.0",
+  "description": "Autonomous super-assistant with self-tooling capabilities",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "sanbot": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.35",
+    "@ai-sdk/openai": "^3.0.25",
+    "@anthropic-ai/sdk": "^0.72.1",
+    "ai": "^6.0.67",
+    "zod": "4.3.6"
+  }
+}
