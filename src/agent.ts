@@ -148,6 +148,12 @@ export class Agent {
     while (response.stop_reason === 'tool_use' && steps < maxSteps) {
       steps++;
 
+      // 防御性检查：确保 content 存在且是数组
+      if (!response.content || !Array.isArray(response.content)) {
+        console.error('❌ Error: response.content is not an array:', response.content);
+        break;
+      }
+
       const toolUseBlocks = response.content.filter(
         (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
       );
@@ -222,6 +228,12 @@ export class Agent {
 
     // 保存助手回复到历史
     this.conversationHistory.push({ role: 'assistant', content: response.content });
+
+    // 防御性检查：确保 content 存在且是数组
+    if (!response.content || !Array.isArray(response.content)) {
+      console.error('❌ Error: response.content is not an array:', response.content);
+      return '';
+    }
 
     const textBlocks = response.content.filter(
       (block): block is Anthropic.TextBlock => block.type === 'text'
