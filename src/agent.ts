@@ -3,6 +3,12 @@ import { generateText, jsonSchema, type CoreMessage } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import type { Config } from './config/types.ts';
 import { createToolRegistry } from './tools/index.ts';
+import {
+  saveConversation,
+  getSessionContext,
+  formatMemoryContext,
+  type ToolCallRecord,
+} from './memory/index.ts';
 
 /**
  * Agent 配置
@@ -10,6 +16,7 @@ import { createToolRegistry } from './tools/index.ts';
 export interface AgentConfig {
   llmConfig: Config['llm'];
   maxSteps?: number;
+  sessionId?: string;
 }
 
 /**
@@ -18,13 +25,28 @@ export interface AgentConfig {
 export class Agent {
   private toolRegistry;
   private config: AgentConfig;
+  private sessionId: string;
   // 对话历史 - 支持多轮对话
   private conversationHistory: Anthropic.MessageParam[] = [];
   private openaiHistory: CoreMessage[] = [];
+  // 当前对话的工具调用记录
+  private currentToolCalls: ToolCallRecord[] = [];
+  // 记忆上下文
+  private memoryContext: string = '';
 
   constructor(config: AgentConfig) {
     this.config = config;
+    this.sessionId =
+      config.sessionId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     this.toolRegistry = createToolRegistry();
+  }
+
+  /**
+   * 初始化记忆上下文
+   */
+  async initMemory(): Promise<void> {
+    const context = await getSessionContext();
+    this.memoryContext = formatMemoryContext(context);
   }
 
   /**
@@ -39,15 +61,30 @@ export class Agent {
    * 执行对话（支持多轮上下文）
    */
   async chat(userMessage: string): Promise<string> {
+    // 重置当前工具调用记录
+    this.currentToolCalls = [];
+
     const { provider } = this.config.llmConfig;
+
+    let response: string;
 
     // Anthropic 使用原生 SDK（更好的兼容性）
     if (provider === 'anthropic') {
-      return this.chatWithAnthropic(userMessage);
+      response = await this.chatWithAnthropic(userMessage);
+    } else {
+      // OpenAI 兼容服务商使用 AI SDK
+      response = await this.chatWithOpenAI(userMessage);
     }
 
-    // OpenAI 兼容服务商使用 AI SDK
-    return this.chatWithOpenAI(userMessage);
+    // 保存对话到记忆系统
+    await saveConversation(
+      this.sessionId,
+      userMessage,
+      response,
+      this.currentToolCalls.length > 0 ? this.currentToolCalls : undefined
+    );
+
+    return response;
   }
 
   /**
@@ -99,6 +136,13 @@ export class Agent {
         if (tool) {
           const result = await tool.execute(toolUse.input);
           console.log(`   Result: ${result.success ? '✅' : '❌'}`);
+
+          // 记录工具调用
+          this.currentToolCalls.push({
+            name: toolUse.name,
+            input: toolUse.input,
+            success: result.success,
+          });
 
           toolResults.push({
             type: 'tool_result',
@@ -207,7 +251,7 @@ export class Agent {
    * 获取系统提示词
    */
   private getSystemPrompt(): string {
-    return `You are SanBot, an autonomous super-assistant with self-tooling capabilities.
+    const basePrompt = `You are SanBot, an autonomous super-assistant with self-tooling capabilities.
 
 Your core abilities:
 1. **Built-in Tools**: You have access to these tools:
@@ -239,5 +283,12 @@ Guidelines:
 - Always verify file operations succeeded
 
 Current working directory: ${process.cwd()}`;
+
+    // 添加记忆上下文
+    if (this.memoryContext) {
+      return basePrompt + '\n' + this.memoryContext;
+    }
+
+    return basePrompt;
   }
 }

@@ -3,6 +3,7 @@
 import * as readline from 'readline';
 import { Agent } from './agent.ts';
 import { loadConfig, initConfig } from './config/loader.ts';
+import { MemoryConsolidator } from './memory/index.ts';
 
 /**
  * 打印使用说明
@@ -13,6 +14,7 @@ SanBot - Autonomous Super-Assistant
 
 Usage:
   sanbot init                    Initialize configuration
+  sanbot consolidate             Consolidate memories (L0 → L1 → L2)
   sanbot "your message"          Single execution mode
   sanbot                         Interactive mode
 
@@ -24,6 +26,7 @@ Examples:
 Interactive Commands:
   /exit, /quit, /q               Exit interactive mode
   /clear                         Clear conversation history
+  /memory                        Show memory status
   /help                          Show help
 
 Environment Variables:
@@ -61,6 +64,13 @@ async function main() {
     process.exit(1);
   }
 
+  // 处理 consolidate 命令
+  if (args[0] === 'consolidate') {
+    const consolidator = new MemoryConsolidator(config.llm);
+    await consolidator.runFullConsolidation();
+    return;
+  }
+
   // 单次执行模式
   if (args.length > 0) {
     const message = args.join(' ');
@@ -80,8 +90,11 @@ async function singleExecution(config: any, message: string) {
   try {
     const agent = new Agent({
       llmConfig: config.llm,
-      maxSteps: 10,
+      maxSteps: 20,
     });
+
+    // 初始化记忆上下文
+    await agent.initMemory();
 
     const response = await agent.chat(message);
     console.log(response);
@@ -109,6 +122,9 @@ async function interactiveMode(config: any) {
     maxSteps: 20,
   });
 
+  // 初始化记忆上下文
+  await agent.initMemory();
+
   const prompt = () => {
     rl.question('\x1b[36m❯\x1b[0m ', async (input) => {
       const trimmed = input.trim();
@@ -135,6 +151,10 @@ async function interactiveMode(config: any) {
           console.clear();
           console.log('🤖 SanBot Interactive Mode');
           console.log('Conversation cleared. Type /help for commands, /exit to quit.\n');
+          prompt();
+          return;
+        } else if (cmd === '/memory') {
+          console.log('\n📝 Memory consolidation: run "sanbot consolidate" to process daily logs.\n');
           prompt();
           return;
         } else {
