@@ -108,8 +108,8 @@ async function singleExecution(config: any, message: string) {
       maxSteps: 20,
     });
 
-    // 初始化记忆上下文
-    await agent.initMemory();
+    // 初始化（加载记忆、灵魂、自创建工具）
+    await agent.init();
 
     const response = await agent.chat(message);
     console.log(response);
@@ -137,8 +137,8 @@ async function interactiveMode(config: any) {
     maxSteps: 20,
   });
 
-  // 初始化记忆上下文
-  await agent.initMemory();
+  // 初始化（加载记忆、灵魂、自创建工具）
+  await agent.init();
 
   const prompt = () => {
     rl.question('\x1b[36m❯\x1b[0m ', async (input) => {

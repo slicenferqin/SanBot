@@ -4,11 +4,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { $ } from 'bun';
 import type { ToolDef, ToolResult } from './registry.ts';
-
-/**
- * Self-Tooling 工具目录
- */
-export const TOOLS_DIR = join(homedir(), '.sanbot', 'tools');
+import { registerTool, loadToolRegistry, TOOLS_DIR } from './tool-registry-center.ts';
 
 /**
  * 确保工具目录存在
@@ -24,9 +20,9 @@ async function ensureToolsDir(): Promise<void> {
  */
 export const createToolTool: ToolDef = {
   name: 'create_tool',
-  description: `创建一个新的 CLI 工具并保存到 ~/.sanbot/tools/。
+  description: `创建一个新的 CLI 工具并注册到工具中心。
 当你遇到能力缺口时（比如需要解析特定格式、处理特定数据等），可以创建一个工具来解决。
-工具会被保存为可执行脚本，后续可以通过 exec 调用。
+工具会被保存为可执行脚本，并自动注册，后续可以像内置工具一样直接调用。
 支持 Python 和 Bash 脚本。`,
   schema: {
     type: 'object',
@@ -48,12 +44,16 @@ export const createToolTool: ToolDef = {
         type: 'string',
         description: '工具的完整代码（包含 shebang）',
       },
+      parameters: {
+        type: 'object',
+        description: '工具的参数定义（JSON Schema 格式），用于注册到工具中心',
+      },
     },
     required: ['name', 'description', 'language', 'code'],
   },
 
   async execute(params): Promise<ToolResult> {
-    const { name, description, language, code } = params;
+    const { name, description, language, code, parameters } = params;
 
     // 验证工具名称
     if (!/^[a-z][a-z0-9_]*$/.test(name)) {
@@ -84,6 +84,20 @@ export const createToolTool: ToolDef = {
       // 设置可执行权限
       await chmod(toolPath, 0o755);
 
+      // 注册到工具中心
+      const now = new Date().toISOString();
+      await registerTool({
+        name,
+        description,
+        language,
+        schema: parameters || {
+          type: 'object',
+          properties: {},
+        },
+        createdAt: now,
+        updatedAt: now,
+      });
+
       // 测试工具是否可执行
       try {
         const testResult = await $`${toolPath} --help 2>&1 || ${toolPath} -h 2>&1 || echo "Tool created"`.quiet();
@@ -96,11 +110,11 @@ export const createToolTool: ToolDef = {
             name,
             description,
             language,
+            registered: true,
             testOutput: testOutput.slice(0, 500),
           },
         };
       } catch {
-        // 即使测试失败，工具也已创建
         return {
           success: true,
           data: {
@@ -108,7 +122,8 @@ export const createToolTool: ToolDef = {
             name,
             description,
             language,
-            note: 'Tool created but test execution failed. It may still work with proper arguments.',
+            registered: true,
+            note: 'Tool created and registered, but test execution failed. It may still work with proper arguments.',
           },
         };
       }
@@ -122,11 +137,11 @@ export const createToolTool: ToolDef = {
 };
 
 /**
- * list_tools 工具 - 列出已创建的工具
+ * list_tools 工具 - 列出已注册的工具
  */
 export const listToolsTool: ToolDef = {
   name: 'list_tools',
-  description: '列出 ~/.sanbot/tools/ 目录下所有已创建的自定义工具',
+  description: '列出所有已注册的自创建工具及其描述',
   schema: {
     type: 'object',
     properties: {},
@@ -134,17 +149,13 @@ export const listToolsTool: ToolDef = {
 
   async execute(): Promise<ToolResult> {
     try {
-      await ensureToolsDir();
-
-      const files = await readdir(TOOLS_DIR);
-      const tools: string[] = [];
-
-      for (const file of files) {
-        // 排除隐藏文件
-        if (!file.startsWith('.')) {
-          tools.push(file);
-        }
-      }
+      const registry = await loadToolRegistry();
+      const tools = Object.values(registry.tools).map((t) => ({
+        name: t.name,
+        description: t.description,
+        language: t.language,
+        createdAt: t.createdAt,
+      }));
 
       return {
         success: true,

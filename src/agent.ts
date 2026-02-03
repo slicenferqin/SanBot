@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { generateText, jsonSchema, type CoreMessage } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import type { Config } from './config/types.ts';
-import { createToolRegistry } from './tools/index.ts';
+import { createToolRegistry, createToolRegistryWithDynamic, type ToolRegistry } from './tools/index.ts';
 import {
   saveConversation,
   getSessionContext,
@@ -24,7 +24,7 @@ export interface AgentConfig {
  * Agent 核心类 - 支持多服务商
  */
 export class Agent {
-  private toolRegistry;
+  private toolRegistry: ToolRegistry;
   private config: AgentConfig;
   private sessionId: string;
   // 对话历史 - 支持多轮对话
@@ -36,24 +36,42 @@ export class Agent {
   private memoryContext: string = '';
   // 灵魂记录
   private soulContext: string = '';
+  // 是否已初始化
+  private initialized: boolean = false;
 
   constructor(config: AgentConfig) {
     this.config = config;
     this.sessionId =
       config.sessionId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // 先用同步版本，init 时会替换
     this.toolRegistry = createToolRegistry();
   }
 
   /**
-   * 初始化记忆上下文
+   * 初始化 Agent（加载记忆和自创建工具）
    */
-  async initMemory(): Promise<void> {
-    const [context, soul] = await Promise.all([
+  async init(): Promise<void> {
+    if (this.initialized) return;
+
+    // 并行加载记忆、灵魂、自创建工具
+    const [context, soul, registry] = await Promise.all([
       getSessionContext(),
       loadSoul(),
+      createToolRegistryWithDynamic(),
     ]);
+
     this.memoryContext = formatMemoryContext(context);
     this.soulContext = soul || '';
+    this.toolRegistry = registry;
+    this.initialized = true;
+  }
+
+  /**
+   * 初始化记忆上下文（兼容旧接口）
+   * @deprecated 使用 init() 代替
+   */
+  async initMemory(): Promise<void> {
+    await this.init();
   }
 
   /**
