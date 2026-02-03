@@ -115,17 +115,50 @@ export async function getSessionContext(): Promise<SessionContext> {
  * 格式化记忆为 system prompt 片段
  */
 export function formatMemoryContext(context: SessionContext): string {
-  if (context.relevantMemories.length === 0) {
+  const sections: string[] = [];
+
+  // L2: 长期记忆摘要
+  if (context.relevantMemories.length > 0) {
+    sections.push(`### Long-term Memory (L2)
+${context.relevantMemories.map((m) => `- ${m}`).join('\n')}`);
+  }
+
+  // L0: 今日对话历史（短期记忆）
+  if (context.todayConversations.length > 0) {
+    // 只取最近 5 条，避免上下文过长
+    const recentConversations = context.todayConversations.slice(-5);
+    const conversationSummary = recentConversations
+      .map((c) => {
+        const time = new Date(c.timestamp).toLocaleTimeString('zh-CN', {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        // 截断过长的内容
+        const userMsg =
+          c.userMessage.length > 100
+            ? c.userMessage.slice(0, 100) + '...'
+            : c.userMessage;
+        const assistantMsg =
+          c.assistantResponse.length > 150
+            ? c.assistantResponse.slice(0, 150) + '...'
+            : c.assistantResponse;
+        return `[${time}] User: ${userMsg}\nAssistant: ${assistantMsg}`;
+      })
+      .join('\n\n');
+
+    sections.push(`### Today's Conversations (L0 - Short-term Memory)
+${conversationSummary}`);
+  }
+
+  if (sections.length === 0) {
     return '';
   }
 
   return `
 ## Memory Context
 
-You have the following memories about this user:
+${sections.join('\n\n')}
 
-${context.relevantMemories.map((m) => `- ${m}`).join('\n')}
-
-Use this context to provide more personalized and relevant responses.
+Use this context to provide personalized and contextually relevant responses.
 `;
 }
