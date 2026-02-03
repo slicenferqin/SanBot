@@ -5,6 +5,82 @@ import { Agent } from './agent.ts';
 import { loadConfig, initConfig } from './config/loader.ts';
 import { MemoryConsolidator } from './memory/index.ts';
 import { birthCeremony, hasSoul } from './birth/index.ts';
+import { setInteractiveMode } from './utils/confirmation.ts';
+import { getTodayAuditLogs, getAuditStats } from './utils/audit-log.ts';
+
+/**
+ * 显示审计日志
+ */
+async function showAuditLogs() {
+  console.log('\n📋 Audit Logs (Today)\n');
+
+  try {
+    const logs = await getTodayAuditLogs();
+    const stats = await getAuditStats();
+
+    if (logs.length === 0) {
+      console.log('  No audit logs today. 🎉\n');
+      return;
+    }
+
+    // 显示统计信息
+    console.log('📊 Statistics:');
+    console.log(`  Total: ${stats.total}`);
+    console.log(`  ✅ Approved: ${stats.approved}`);
+    console.log(`  ❌ Rejected: ${stats.rejected}`);
+    console.log(`  🚫 Auto-blocked: ${stats.autoBlocked}`);
+    console.log(`\n  By Level:`);
+    console.log(`    🟢 Safe: ${stats.byLevel.safe}`);
+    console.log(`    🟡 Warning: ${stats.byLevel.warning}`);
+    console.log(`    🟠 Danger: ${stats.byLevel.danger}`);
+    console.log(`    🔴 Critical: ${stats.byLevel.critical}`);
+    console.log('\n' + '─'.repeat(80) + '\n');
+
+    // 显示详细日志
+    console.log('📝 Detailed Logs:\n');
+    for (const log of logs) {
+      const time = new Date(log.timestamp).toLocaleTimeString();
+      const levelIcon = {
+        safe: '🟢',
+        warning: '🟡',
+        danger: '🟠',
+        critical: '🔴',
+      }[log.dangerLevel];
+
+      const actionIcon = {
+        approved: '✅',
+        rejected: '❌',
+        auto_blocked: '🚫',
+      }[log.action];
+
+      console.log(`${time} ${levelIcon} ${actionIcon} ${log.action.toUpperCase()}`);
+      console.log(`  Command: ${log.command}`);
+      
+      if (log.reasons.length > 0) {
+        console.log(`  Reasons:`);
+        for (const reason of log.reasons) {
+          console.log(`    • ${reason}`);
+        }
+      }
+
+      if (log.executionResult) {
+        const result = log.executionResult;
+        if (result.success) {
+          console.log(`  Result: ✅ Success (exit code: ${result.exitCode ?? 0})`);
+        } else {
+          console.log(`  Result: ❌ Failed`);
+          if (result.error) {
+            console.log(`  Error: ${result.error}`);
+          }
+        }
+      }
+
+      console.log('');
+    }
+  } catch (error: any) {
+    console.error('❌ Error reading audit logs:', error.message);
+  }
+}
 
 /**
  * 打印使用说明
@@ -29,6 +105,7 @@ Interactive Commands:
   /exit, /quit, /q               Exit interactive mode
   /clear                         Clear conversation history
   /memory                        Show memory status
+  /audit                         Show audit logs
   /help                          Show help
 
 Environment Variables:
@@ -102,10 +179,13 @@ async function main() {
 async function singleExecution(config: any, message: string) {
   console.log('🤖 SanBot is thinking...\n');
 
+  // 单次执行模式不启用交互确认（危险操作自动跳过）
+  setInteractiveMode(false);
+
   try {
     const agent = new Agent({
       llmConfig: config.llm,
-      maxSteps: 20,
+      maxSteps: 999,
     });
 
     // 初始化（加载记忆、灵魂、自创建工具）
@@ -127,6 +207,9 @@ async function interactiveMode(config: any) {
   console.log('🤖 SanBot Interactive Mode');
   console.log('Type /help for commands, /exit to quit.\n');
 
+  // 交互模式启用危险操作确认
+  setInteractiveMode(true);
+
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -134,7 +217,7 @@ async function interactiveMode(config: any) {
 
   const agent = new Agent({
     llmConfig: config.llm,
-    maxSteps: 20,
+    maxSteps: 999,
   });
 
   // 初始化（加载记忆、灵魂、自创建工具）
@@ -170,6 +253,10 @@ async function interactiveMode(config: any) {
           return;
         } else if (cmd === '/memory') {
           console.log('\n📝 Memory consolidation: run "sanbot consolidate" to process daily logs.\n');
+          prompt();
+          return;
+        } else if (cmd === '/audit') {
+          await showAuditLogs();
           prompt();
           return;
         } else {

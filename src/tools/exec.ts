@@ -1,12 +1,18 @@
 import { $ } from 'bun';
 import type { ToolDef, ToolResult } from './registry.ts';
+import {
+  checkAndConfirm,
+  logExecutionResult,
+  requiresConfirmation,
+} from '../utils/confirmation.ts';
 
 /**
  * exec 工具 - 执行 shell 命令
+ * 集成危险操作确认机制
  */
 export const execTool: ToolDef = {
   name: 'exec',
-  description: '执行 shell 命令，获取 stdout/stderr。用于运行系统命令、脚本等。',
+  description: '执行 shell 命令，获取 stdout/stderr。用于运行系统命令、脚本等。危险命令会请求用户确认。',
   schema: {
     type: 'object',
     properties: {
@@ -29,6 +35,21 @@ export const execTool: ToolDef = {
   async execute(params): Promise<ToolResult> {
     const { command, cwd, timeout = 30000 } = params;
 
+    // 检查危险操作并请求确认
+    const { approved, analysis } = await checkAndConfirm(command);
+
+    if (!approved) {
+      return {
+        success: false,
+        error: `操作已取消: ${analysis.reasons.join(', ')}`,
+        data: {
+          dangerLevel: analysis.level,
+          reasons: analysis.reasons,
+          cancelled: true,
+        },
+      };
+    }
+
     try {
       const proc = $`sh -c ${command}`.cwd(cwd || process.cwd()).quiet();
 
@@ -41,6 +62,17 @@ export const execTool: ToolDef = {
       const stdout = await (result as any).text();
       const exitCode = (result as any).exitCode;
 
+      const execResult = {
+        success: exitCode === 0,
+        exitCode,
+        error: exitCode !== 0 ? `Exit code: ${exitCode}` : undefined,
+      };
+
+      // 记录危险命令执行结果
+      if (requiresConfirmation(analysis)) {
+        await logExecutionResult(command, analysis, execResult);
+      }
+
       return {
         success: exitCode === 0,
         data: {
@@ -50,6 +82,17 @@ export const execTool: ToolDef = {
         },
       };
     } catch (error: any) {
+      const execResult = {
+        success: false,
+        exitCode: error.exitCode || 1,
+        error: error.message,
+      };
+
+      // 记录危险命令执行失败
+      if (requiresConfirmation(analysis)) {
+        await logExecutionResult(command, analysis, execResult);
+      }
+
       return {
         success: false,
         error: error.message || 'Command execution failed',

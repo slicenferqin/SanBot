@@ -10,6 +10,7 @@ import {
   type ToolCallRecord,
 } from './memory/index.ts';
 import { loadSoul } from './birth/index.ts';
+import { setSessionId } from './utils/confirmation.ts';
 
 /**
  * Agent 配置
@@ -43,6 +44,8 @@ export class Agent {
     this.config = config;
     this.sessionId =
       config.sessionId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // 设置全局会话 ID（用于审计日志）
+    setSessionId(this.sessionId);
     // 先用同步版本，init 时会替换
     this.toolRegistry = createToolRegistry();
   }
@@ -140,7 +143,7 @@ export class Agent {
 
     // 处理工具调用循环
     let steps = 0;
-    const maxSteps = this.config.maxSteps || 10;
+    const maxSteps = this.config.maxSteps || 999;
 
     while (response.stop_reason === 'tool_use' && steps < maxSteps) {
       steps++;
@@ -262,7 +265,7 @@ export class Agent {
       model,
       messages: this.openaiHistory,
       tools,
-      maxSteps: this.config.maxSteps || 10,
+      maxSteps: this.config.maxSteps || 999,
       system: this.getSystemPrompt(),
     });
 
