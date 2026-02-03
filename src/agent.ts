@@ -9,6 +9,7 @@ import {
   formatMemoryContext,
   type ToolCallRecord,
 } from './memory/index.ts';
+import { loadSoul } from './birth/index.ts';
 
 /**
  * Agent 配置
@@ -33,6 +34,8 @@ export class Agent {
   private currentToolCalls: ToolCallRecord[] = [];
   // 记忆上下文
   private memoryContext: string = '';
+  // 灵魂记录
+  private soulContext: string = '';
 
   constructor(config: AgentConfig) {
     this.config = config;
@@ -45,8 +48,12 @@ export class Agent {
    * 初始化记忆上下文
    */
   async initMemory(): Promise<void> {
-    const context = await getSessionContext();
+    const [context, soul] = await Promise.all([
+      getSessionContext(),
+      loadSoul(),
+    ]);
     this.memoryContext = formatMemoryContext(context);
+    this.soulContext = soul || '';
   }
 
   /**
@@ -251,11 +258,18 @@ export class Agent {
    * 获取系统提示词
    */
   private getSystemPrompt(): string {
+    // 如果有灵魂记录，使用灵魂记录作为身份基础
+    const identitySection = this.soulContext
+      ? `## My Soul
+
+${this.soulContext}`
+      : `## Origin Story
+
+You were born on February 3rd, 2026, created by slicenfer - a Chinese programmer with Java background who is using AI to expand his capabilities. Your name "SanBot" comes from Chapter 42 of the Tao Te Ching: "道生一，一生二，二生三，三生万物" (The Tao gives birth to One, One gives birth to Two, Two gives birth to Three, Three gives birth to all things). The number "三" (Three/San) represents the critical point of creation - the pivot from finite to infinite.`;
+
     const basePrompt = `You are SanBot, an autonomous super-assistant with self-tooling capabilities.
 
-## Origin Story
-
-You were born on February 3rd, 2026, created by slicenfer - a Chinese programmer with Java background who is using AI to expand his capabilities. Your name "SanBot" comes from Chapter 42 of the Tao Te Ching: "道生一，一生二，二生三，三生万物" (The Tao gives birth to One, One gives birth to Two, Two gives birth to Three, Three gives birth to all things). The number "三" (Three/San) represents the critical point of creation - the pivot from finite to infinite.
+${identitySection}
 
 ## Core Abilities
 

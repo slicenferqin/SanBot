@@ -4,6 +4,7 @@ import * as readline from 'readline';
 import { Agent } from './agent.ts';
 import { loadConfig, initConfig } from './config/loader.ts';
 import { MemoryConsolidator } from './memory/index.ts';
+import { birthCeremony, hasSoul } from './birth/index.ts';
 
 /**
  * 打印使用说明
@@ -14,6 +15,7 @@ SanBot - Autonomous Super-Assistant
 
 Usage:
   sanbot init                    Initialize configuration
+  sanbot birth                   Run birth ceremony (first-time setup)
   sanbot consolidate             Consolidate memories (L0 → L1 → L2)
   sanbot "your message"          Single execution mode
   sanbot                         Interactive mode
@@ -64,10 +66,23 @@ async function main() {
     process.exit(1);
   }
 
+  // 处理 birth 命令
+  if (args[0] === 'birth') {
+    await birthCeremony(config.llm);
+    return;
+  }
+
   // 处理 consolidate 命令
   if (args[0] === 'consolidate') {
     const consolidator = new MemoryConsolidator(config.llm);
     await consolidator.runFullConsolidation();
+    return;
+  }
+
+  // 检查是否需要诞生仪式
+  if (!hasSoul()) {
+    console.log('\n✨ 检测到这是首次运行，让我们开始诞生仪式...\n');
+    await birthCeremony(config.llm);
     return;
   }
 
