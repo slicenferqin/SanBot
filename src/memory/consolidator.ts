@@ -104,10 +104,14 @@ ${conversationText}
     const text =
       response.content[0].type === 'text' ? response.content[0].text : '';
 
+    // 调试输出
+    console.log('  LLM response:', text.slice(0, 200) + (text.length > 200 ? '...' : ''));
+
     try {
       // 尝试解析 JSON
       const jsonMatch = text.match(/\[[\s\S]*\]/);
       if (!jsonMatch) {
+        console.log('  No JSON array found in response');
         return [];
       }
 
@@ -116,6 +120,8 @@ ${conversationText}
         content: string;
         confidence: number;
       }>;
+
+      console.log(`  Parsed ${parsed.length} memories`);
 
       // 转换为 ExtractedMemory 格式
       return parsed.map((item) => ({
@@ -127,7 +133,8 @@ ${conversationText}
         confidence: item.confidence,
       }));
     } catch (error) {
-      console.error('Failed to parse extraction result:', error);
+      console.error('  Failed to parse extraction result:', error);
+      console.error('  Raw text:', text);
       return [];
     }
   }
