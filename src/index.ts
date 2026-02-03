@@ -191,8 +191,8 @@ async function singleExecution(config: any, message: string) {
     // 初始化（加载记忆、灵魂、自创建工具）
     await agent.init();
 
-    const response = await agent.chat(message);
-    console.log(response);
+    // 使用流式输出
+    await agent.chatStream(message);
     console.log('\n✅ Done!');
   } catch (error: any) {
     console.error('\n❌ Error:', JSON.stringify(error, null, 2));
@@ -267,10 +267,10 @@ async function interactiveMode(config: any) {
       }
 
       // 执行对话
-      console.log('\n🤖 Thinking...\n');
+      console.log('\n');
       try {
-        const response = await agent.chat(trimmed);
-        console.log(response);
+        // 使用流式输出
+        await agent.chatStream(trimmed);
         console.log();
       } catch (error: any) {
         console.error('❌ Error:', error.message);

@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { generateText, jsonSchema, type CoreMessage } from 'ai';
+import { generateText, jsonSchema, streamText, type CoreMessage } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import type { Config } from './config/types.ts';
 import { createToolRegistry, createToolRegistryWithDynamic, type ToolRegistry } from './tools/index.ts';
@@ -11,6 +11,7 @@ import {
 } from './memory/index.ts';
 import { loadSoul } from './birth/index.ts';
 import { setSessionId } from './utils/confirmation.ts';
+import { ToolSpinner, StreamWriter } from './tui/index.ts';
 
 /**
  * Agent 配置
@@ -102,6 +103,36 @@ export class Agent {
     } else {
       // OpenAI 兼容服务商使用 AI SDK
       response = await this.chatWithOpenAI(userMessage);
+    }
+
+    // 保存对话到记忆系统
+    await saveConversation(
+      this.sessionId,
+      userMessage,
+      response,
+      this.currentToolCalls.length > 0 ? this.currentToolCalls : undefined
+    );
+
+    return response;
+  }
+
+  /**
+   * 流式对话（实时显示响应）
+   */
+  async chatStream(userMessage: string): Promise<string> {
+    // 重置当前工具调用记录
+    this.currentToolCalls = [];
+
+    const { provider } = this.config.llmConfig;
+
+    let response: string;
+
+    // Anthropic 使用原生 SDK（更好的兼容性）
+    if (provider === 'anthropic') {
+      response = await this.chatWithAnthropicStream(userMessage);
+    } else {
+      // OpenAI 兼容服务商使用 AI SDK
+      response = await this.chatWithOpenAIStream(userMessage);
     }
 
     // 保存对话到记忆系统
@@ -343,4 +374,230 @@ Current working directory: ${process.cwd()}`;
 
     return basePrompt;
   }
+
+  /**
+   * 使用 Anthropic SDK 流式对话
+   */
+  private async chatWithAnthropicStream(userMessage: string): Promise<string> {
+    const client = new Anthropic({
+      apiKey: this.config.llmConfig.apiKey,
+      baseURL: this.config.llmConfig.baseUrl,
+    });
+
+    const tools = this.toolRegistry.getAll().map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.schema as Anthropic.Tool['input_schema'],
+    }));
+
+    // 添加用户消息到历史
+    this.conversationHistory.push({ role: 'user', content: userMessage });
+
+    const streamWriter = new StreamWriter();
+    const spinner = new ToolSpinner();
+
+    let response = await this.streamAnthropicMessage(
+      client,
+      tools,
+      streamWriter,
+      spinner
+    );
+
+    // 处理工具调用循环
+    let steps = 0;
+    const maxSteps = this.config.maxSteps || 999;
+
+    while (response.stop_reason === 'tool_use' && steps < maxSteps) {
+      steps++;
+
+      if (!response.content || !Array.isArray(response.content)) {
+        console.error('❌ Error: response.content is not an array:', response.content);
+        break;
+      }
+
+      const toolUseBlocks = response.content.filter(
+        (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
+      );
+
+      this.conversationHistory.push({ role: 'assistant', content: response.content });
+
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+
+      for (const toolUse of toolUseBlocks) {
+        spinner.start(toolUse.name, toolUse.input);
+
+        const tool = this.toolRegistry.get(toolUse.name);
+        if (tool) {
+          const result = await tool.execute(toolUse.input);
+          
+          if (result.success) {
+            spinner.success(toolUse.name);
+          } else {
+            spinner.error(toolUse.name, result.error);
+          }
+
+          // 记录工具调用
+          this.currentToolCalls.push({
+            name: toolUse.name,
+            input: toolUse.input,
+            success: result.success,
+          });
+
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: toolUse.id,
+            content: JSON.stringify(result),
+          });
+        } else {
+          spinner.error(toolUse.name, `Unknown tool: ${toolUse.name}`);
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: toolUse.id,
+            content: JSON.stringify({ error: `Unknown tool: ${toolUse.name}` }),
+            is_error: true,
+          });
+        }
+      }
+
+      this.conversationHistory.push({ role: 'user', content: toolResults });
+
+      // 继续流式输出
+      response = await this.streamAnthropicMessage(
+        client,
+        tools,
+        streamWriter,
+        spinner
+      );
+    }
+
+    // 如果达到 maxSteps 但 LLM 还想调用工具，强制让它生成总结
+    if (response.stop_reason === 'tool_use') {
+      console.log('\n⚠️ Reached max steps, requesting final summary...');
+
+      this.conversationHistory.push({ role: 'assistant', content: response.content });
+
+      this.conversationHistory.push({
+        role: 'user',
+        content: 'You have reached the maximum number of tool calls. Please summarize what you have found and provide your final response without using any more tools.',
+      });
+
+      response = await this.streamAnthropicMessage(
+        client,
+        [],
+        streamWriter,
+        spinner
+      );
+    }
+
+    // 保存助手回复到历史
+    this.conversationHistory.push({ role: 'assistant', content: response.content });
+
+    streamWriter.end();
+    return streamWriter.getBuffer();
+  }
+
+  /**
+   * 流式处理 Anthropic 消息
+   */
+  private async streamAnthropicMessage(
+    client: Anthropic,
+    tools: Anthropic.Tool[],
+    streamWriter: StreamWriter,
+    spinner: ToolSpinner
+  ): Promise<Anthropic.Message> {
+    const stream = client.messages.stream({
+      model: this.config.llmConfig.model,
+      max_tokens: 4096,
+      system: this.getSystemPrompt(),
+      messages: this.conversationHistory,
+      tools: tools.length > 0 ? tools : undefined,
+    });
+
+    // 监听文本增量
+    stream.on('text', (text) => {
+      streamWriter.write(text);
+    });
+
+    // 监听错误
+    stream.on('error', (error) => {
+      console.error('Stream error:', error);
+    });
+
+    // 等待流完成并获取最终消息
+    const finalMessage = await stream.finalMessage();
+    
+    return finalMessage;
+  }
+
+  /**
+   * 使用 OpenAI 兼容 API 流式对话
+   */
+  private async chatWithOpenAIStream(userMessage: string): Promise<string> {
+    const openai = createOpenAI({
+      apiKey: this.config.llmConfig.apiKey,
+      baseURL: this.config.llmConfig.baseUrl,
+      headers: this.config.llmConfig.headers,
+      compatibility: 'compatible',
+    });
+
+    const model = openai.chat(this.config.llmConfig.model);
+
+    const spinner = new ToolSpinner();
+    const streamWriter = new StreamWriter();
+
+    // 构建工具定义
+    const tools: Record<string, any> = {};
+    for (const t of this.toolRegistry.getAll()) {
+      tools[t.name] = {
+        description: t.description,
+        parameters: jsonSchema(t.schema),
+        execute: async (params: any) => {
+          spinner.start(t.name, params);
+          const result = await t.execute(params);
+          
+          if (result.success) {
+            spinner.success(t.name);
+          } else {
+            spinner.error(t.name, result.error);
+          }
+
+          // 记录工具调用
+          this.currentToolCalls.push({
+            name: t.name,
+            input: params,
+            success: result.success,
+          });
+
+          return result;
+        },
+      };
+    }
+
+    // 添加用户消息到历史
+    this.openaiHistory.push({ role: 'user', content: userMessage });
+
+    const result = await streamText({
+      model,
+      messages: this.openaiHistory,
+      tools,
+      maxSteps: this.config.maxSteps || 999,
+      system: this.getSystemPrompt(),
+    });
+
+    // 流式输出文本
+    for await (const chunk of result.textStream) {
+      streamWriter.write(chunk);
+    }
+
+    streamWriter.end();
+
+    // 等待完整结果
+    const fullText = await result.text;
+
+    // 保存助手回复到历史
+    this.openaiHistory.push({ role: 'assistant', content: fullText });
+
+    return fullText;
+  }
 }
+
