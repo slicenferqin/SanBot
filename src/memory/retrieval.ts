@@ -15,6 +15,7 @@ export interface SessionContext {
   summary?: MemorySummary;
   todayConversations: ConversationRecord[];
   relevantMemories: string[];
+  extracted?: Record<string, string[]>;
 }
 
 /**
@@ -82,9 +83,20 @@ export async function loadExtractedMemories(
  * 获取会话上下文（用于注入到 system prompt）
  */
 export async function getSessionContext(): Promise<SessionContext> {
-  const [summary, todayConversations] = await Promise.all([
+  const [
+    summary,
+    todayConversations,
+    runtimeMemories,
+    decisionMemories,
+    factMemories,
+    preferenceMemories,
+  ] = await Promise.all([
     loadSummary(),
     loadTodayConversations(),
+    loadExtractedMemories('runtime'),
+    loadExtractedMemories('decisions'),
+    loadExtractedMemories('facts'),
+    loadExtractedMemories('preferences'),
   ]);
 
   // 收集相关记忆
@@ -104,10 +116,38 @@ export async function getSessionContext(): Promise<SessionContext> {
     }
   }
 
+  // L1: compaction 产出的记忆
+  if (decisionMemories.length > 0) {
+    relevantMemories.push(
+      ...decisionMemories.slice(-5).map((m) => `Decision: ${m}`)
+    );
+  }
+  if (factMemories.length > 0) {
+    relevantMemories.push(
+      ...factMemories.slice(-5).map((m) => `Fact: ${m}`)
+    );
+  }
+  if (preferenceMemories.length > 0) {
+    relevantMemories.push(
+      ...preferenceMemories.slice(-5).map((m) => `Preference: ${m}`)
+    );
+  }
+
+  if (runtimeMemories.length > 0) {
+    const latestRuntime = runtimeMemories.slice(-3);
+    relevantMemories.push(...latestRuntime.map((memory) => `Runtime Insight: ${memory}`));
+  }
+
   return {
     summary: summary || undefined,
     todayConversations,
     relevantMemories,
+    extracted: {
+      runtime: runtimeMemories.slice(-10),
+      decisions: decisionMemories.slice(-10),
+      facts: factMemories.slice(-10),
+      preferences: preferenceMemories.slice(-10),
+    },
   };
 }
 
@@ -121,6 +161,22 @@ export function formatMemoryContext(context: SessionContext): string {
   if (context.relevantMemories.length > 0) {
     sections.push(`### Long-term Memory (L2)
 ${context.relevantMemories.map((m) => `- ${m}`).join('\n')}`);
+  }
+
+  // L1: 抽取记忆（compaction 产出）
+  const l1Sections: string[] = [];
+  if (context.extracted?.decisions?.length) {
+    l1Sections.push(...context.extracted.decisions.slice(-5).map((d) => `- [Decision] ${d}`));
+  }
+  if (context.extracted?.facts?.length) {
+    l1Sections.push(...context.extracted.facts.slice(-5).map((f) => `- [Fact] ${f}`));
+  }
+  if (context.extracted?.preferences?.length) {
+    l1Sections.push(...context.extracted.preferences.slice(-5).map((p) => `- [Preference] ${p}`));
+  }
+  if (l1Sections.length > 0) {
+    sections.push(`### Extracted Memory (L1)
+${l1Sections.join('\n')}`);
   }
 
   // L0: 今日对话历史（短期记忆）

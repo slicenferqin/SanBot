@@ -21,6 +21,7 @@ import {
   ContextCompactor,
   type CompactionConfig,
 } from './context/index.ts';
+import { SubagentRunner, type SubagentTask, type SubagentResult } from './agent/subagent.ts';
 import { pc } from './tui-v3/utils.ts';
 
 type CoreMessage = {
@@ -130,6 +131,30 @@ export class Agent {
   clearHistory(): void {
     this.conversationHistory = [];
     this.openaiHistory = [];
+  }
+
+  /**
+   * 委派任务给子代理执行
+   * 子代理在独立上下文中工作，只回传结构化摘要
+   */
+  async delegateToSubagent(task: SubagentTask): Promise<SubagentResult> {
+    const runner = new SubagentRunner(this.config.llmConfig);
+    return runner.run(task);
+  }
+
+  /**
+   * 并行委派多个任务给子代理
+   */
+  async delegateParallel(tasks: SubagentTask[]): Promise<SubagentResult[]> {
+    const runner = new SubagentRunner(this.config.llmConfig);
+    return runner.runParallel(tasks);
+  }
+
+  /**
+   * 将子代理结果合并为可注入上下文的摘要
+   */
+  mergeSubagentResults(results: SubagentResult[]): string {
+    return SubagentRunner.mergeResults(results);
   }
 
   /**
