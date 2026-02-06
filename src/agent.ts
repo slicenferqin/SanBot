@@ -22,6 +22,12 @@ import {
   type CompactionConfig,
 } from './context/index.ts';
 import { SubagentRunner, type SubagentTask, type SubagentResult } from './agent/subagent.ts';
+import {
+  MCPManager,
+  loadMCPConfig,
+  getMCPToolDefs,
+  type MCPServerConfig,
+} from './mcp/index.ts';
 import { pc } from './tui-v3/utils.ts';
 
 type CoreMessage = {
@@ -37,6 +43,8 @@ export interface AgentConfig {
   maxSteps?: number;
   sessionId?: string;
   compaction?: Partial<CompactionConfig>;
+  /** 是否启用 MCP */
+  enableMCP?: boolean;
 }
 
 /**
@@ -61,6 +69,8 @@ export class Agent {
   private initialized: boolean = false;
   // 上下文压缩器
   private compactor: ContextCompactor;
+  // MCP 管理器
+  private mcpManager: MCPManager | null = null;
 
   constructor(config: AgentConfig) {
     this.config = config;
@@ -94,7 +104,47 @@ export class Agent {
     if (runtime) {
       this.runtimeContext = formatRuntimeContext(runtime);
     }
+
+    // 初始化 MCP（如果启用）
+    if (this.config.enableMCP) {
+      await this.initMCP();
+    }
+
     this.initialized = true;
+  }
+
+  /**
+   * 初始化 MCP 连接
+   */
+  private async initMCP(): Promise<void> {
+    try {
+      const mcpConfig = await loadMCPConfig();
+      if (mcpConfig.servers.length === 0) {
+        return;
+      }
+
+      this.mcpManager = new MCPManager();
+      for (const server of mcpConfig.servers) {
+        this.mcpManager.addServer(server);
+      }
+
+      await this.mcpManager.connectAll();
+
+      // 将 MCP 工具注册到工具注册表
+      for (const { server, tool } of this.mcpManager.getAllTools()) {
+        const client = this.mcpManager.getClient(server);
+        if (client) {
+          const toolDefs = getMCPToolDefs(client);
+          for (const toolDef of toolDefs) {
+            this.toolRegistry.register(toolDef);
+          }
+        }
+      }
+
+      console.log(pc.gray(`[Agent] MCP initialized with ${this.mcpManager.getAllTools().length} tools`));
+    } catch (error: any) {
+      console.warn(pc.yellow(`[Agent] MCP initialization failed: ${error.message}`));
+    }
   }
 
   /**

@@ -6,6 +6,7 @@ import { editFileTool } from './edit-file.ts';
 import { listDirTool } from './list-dir.ts';
 import { createToolTool, listToolsTool, runToolTool } from './self-tool.ts';
 import { getDynamicTools } from './tool-registry-center.ts';
+import { getBusinessTools } from './business.ts';
 
 /**
  * 创建并注册所有内置工具
@@ -24,6 +25,11 @@ export function createToolRegistry(): ToolRegistry {
   registry.register(createToolTool);
   registry.register(listToolsTool);
   registry.register(runToolTool);
+
+  // 注册业务工具
+  for (const tool of getBusinessTools()) {
+    registry.register(tool);
+  }
 
   return registry;
 }
@@ -48,6 +54,7 @@ export async function createToolRegistryWithDynamic(): Promise<ToolRegistry> {
 // 导出所有工具
 export { execTool, readFileTool, writeFileTool, editFileTool, listDirTool };
 export { createToolTool, listToolsTool, runToolTool };
+export { getBusinessTools } from './business.ts';
 export { ToolRegistry } from './registry.ts';
 export type { ToolDef, ToolResult } from './registry.ts';
 export { getDynamicTools, loadToolRegistry } from './tool-registry-center.ts';
