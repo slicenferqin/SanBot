@@ -41,7 +41,8 @@ async function migrate() {
     let description = `自创建工具: ${file}`;
     const docMatch = content.match(/"""([\s\S]*?)"""|'''([\s\S]*?)'''|# (.+)/);
     if (docMatch) {
-      description = (docMatch[1] || docMatch[2] || docMatch[3] || '').trim().split('\n')[0];
+      const summary = (docMatch[1] || docMatch[2] || docMatch[3] || '').trim();
+      description = summary.split('\n')[0] || description;
     }
 
     const now = new Date().toISOString();

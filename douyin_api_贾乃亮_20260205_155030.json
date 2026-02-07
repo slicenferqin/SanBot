@@ -1,0 +1,39 @@
+{
+  "status_code": 0,
+  "data": [],
+  "qc": "",
+  "cursor": 0,
+  "has_more": 0,
+  "extra": {
+    "now": 1770277830000,
+    "logid": "202602051550304E876ED39B34F7447717",
+    "fatal_item_ids": [],
+    "search_request_id": "",
+    "scenes": null
+  },
+  "log_pb": {
+    "impr_id": "202602051550304E876ED39B34F7447717"
+  },
+  "search_nil_info": {
+    "search_nil_type": "verify_check",
+    "is_load_more": "first_flush",
+    "search_nil_item": "verify_check",
+    "text_type": 9
+  },
+  "guide_search_words": null,
+  "global_doodle_config": {
+    "keyword": "贾乃亮"
+  },
+  "polling_time": 3,
+  "time_cost": {
+    "stream_inner": 60
+  },
+  "ops": null,
+  "douyin_ai_search_info": {
+    "is_simple_qa_intent": false,
+    "is_hit_high_risk": false,
+    "ai_search_req_patch": {}
+  },
+  "path": "/aweme/v1/web/general/search/single/",
+  "mock_recall_path": "/aweme/v1/web/general/search/single/"
+}

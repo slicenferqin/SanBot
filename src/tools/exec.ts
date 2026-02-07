@@ -5,6 +5,7 @@ import {
   logExecutionResult,
   requiresConfirmation,
 } from '../utils/confirmation.ts';
+import { recordContextEvent } from '../context/tracker.ts';
 
 /**
  * exec 工具 - 执行 shell 命令
@@ -73,7 +74,7 @@ export const execTool: ToolDef = {
         await logExecutionResult(command, analysis, execResult);
       }
 
-      return {
+      const response = {
         success: exitCode === 0,
         data: {
           stdout: stdout || '',
@@ -81,6 +82,13 @@ export const execTool: ToolDef = {
           exitCode,
         },
       };
+      await recordContextEvent({
+        source: 'exec',
+        summary: `${command}`,
+        detail: `cwd=${cwd || process.cwd()} exit=${exitCode}`,
+      });
+      logSearchEventIfNeeded(command, cwd);
+      return response;
     } catch (error: any) {
       const execResult = {
         success: false,
@@ -93,7 +101,7 @@ export const execTool: ToolDef = {
         await logExecutionResult(command, analysis, execResult);
       }
 
-      return {
+      const response = {
         success: false,
         error: error.message || 'Command execution failed',
         data: {
@@ -102,6 +110,25 @@ export const execTool: ToolDef = {
           exitCode: error.exitCode || 1,
         },
       };
+      await recordContextEvent({
+        source: 'exec',
+        summary: `${command}`,
+        detail: `cwd=${cwd || process.cwd()} error=${error.message || 'failed'}`,
+      });
+      logSearchEventIfNeeded(command, cwd, error.message);
+      return response;
     }
   },
 };
+
+function logSearchEventIfNeeded(command: string, cwd?: string, error?: string) {
+  const lower = command.toLowerCase();
+  const searchKeywords = [' rg ', ' rg\n', ' grep ', ' grep\n', ' find ', 'search'];
+  const matched = searchKeywords.some((keyword) => lower.includes(keyword.trim()));
+  if (!matched) return;
+  recordContextEvent({
+    source: 'search',
+    summary: command,
+    detail: `${error ? 'failed' : 'success'} cwd=${cwd || process.cwd()}`,
+  }).catch(() => {});
+}

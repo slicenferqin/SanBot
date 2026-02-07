@@ -1,10 +1,17 @@
 import { createSpinner } from 'nanospinner';
 import pc from 'picocolors';
 
+export interface ToolSpinnerInterface {
+  start(toolName: string, input: any): void;
+  success(toolName: string): void;
+  error(toolName: string, errorMsg?: string): void;
+  stop(): void;
+}
+
 /**
  * 工具调用 Spinner 管理器
  */
-export class ToolSpinner {
+export class ToolSpinner implements ToolSpinnerInterface {
   private spinner: ReturnType<typeof createSpinner> | null = null;
   private startTime: number = 0;
   private isTTY: boolean;
@@ -19,17 +26,20 @@ export class ToolSpinner {
    */
   start(toolName: string, input: any): void {
     this.startTime = Date.now();
-    
+
+    // 确保在新行开始 spinner（避免覆盖流式输出的文本）
+    process.stdout.write('\n');
+
     if (!this.isTTY) {
       // 非 TTY 环境，使用简单输出
       console.log(`🔧 Calling ${toolName}...`);
       return;
     }
-    
+
     // 格式化输入参数摘要
     const inputSummary = this.formatInputSummary(input);
     const message = `${pc.yellow('Calling')} ${pc.bold(toolName)}${inputSummary}`;
-    
+
     this.spinner = createSpinner(message).start();
   }
 
@@ -99,6 +109,10 @@ export class ToolSpinner {
 
     // 只显示第一个参数的值（简化显示）
     const firstKey = keys[0];
+    if (!firstKey) {
+      return '';
+    }
+
     const firstValue = input[firstKey];
     
     if (typeof firstValue === 'string') {

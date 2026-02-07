@@ -101,8 +101,10 @@ ${conversationText}
       messages: [{ role: 'user', content: prompt }],
     });
 
-    const text =
-      response.content[0].type === 'text' ? response.content[0].text : '';
+    const textBlock = response.content.find(
+      (block): block is Anthropic.TextBlock => block.type === 'text'
+    );
+    const text = textBlock?.text ?? '';
 
     // 调试输出
     console.log('  LLM response:', text.slice(0, 200) + (text.length > 200 ? '...' : ''));
@@ -255,8 +257,10 @@ ${Object.entries(l1Contents)
       messages: [{ role: 'user', content: prompt }],
     });
 
-    const text =
-      response.content[0].type === 'text' ? response.content[0].text : '';
+    const textBlock = response.content.find(
+      (block): block is Anthropic.TextBlock => block.type === 'text'
+    );
+    const text = textBlock?.text ?? '';
 
     try {
       const jsonMatch = text.match(/\{[\s\S]*\}/);

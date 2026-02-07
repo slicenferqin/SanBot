@@ -3,7 +3,7 @@
  * 在执行危险命令前询问用户确认
  */
 
-import * as readline from 'readline';
+import type { ServerWebSocket } from 'bun';
 import {
   analyzeDanger,
   requiresConfirmation,
@@ -47,6 +47,60 @@ export function isInteractiveMode(): boolean {
   return interactiveMode;
 }
 
+// TUI 模式标志 - 在 TUI 模式下，危险操作自动批准（因为 stdin 被占用）
+let tuiMode = false;
+
+/**
+ * 设置 TUI 模式
+ * 在 TUI 模式下，由于 stdin 被 TUI 占用，危险操作会自动批准
+ * 但会在 TUI 中显示警告
+ */
+export function setTuiMode(enabled: boolean): void {
+  tuiMode = enabled;
+}
+
+/**
+ * 是否处于 TUI 模式
+ */
+export function isTuiMode(): boolean {
+  return tuiMode;
+}
+
+// WebSocket 确认回调 - Map<sessionId, callback>
+const webSocketConfirmCallbacks = new Map<string, (command: string, analysis: DangerAnalysis) => Promise<boolean>>();
+
+// 当前活跃的 sessionId（用于路由确认请求）
+let activeSessionId: string | null = null;
+
+/**
+ * 设置 WebSocket 确认回调
+ * 用于 WebUI 模式下通过 WebSocket 请求用户确认
+ */
+export function setWebSocketConfirmCallback(sessionId: string, callback: (command: string, analysis: DangerAnalysis) => Promise<boolean>): void {
+  webSocketConfirmCallbacks.set(sessionId, callback);
+}
+
+/**
+ * 移除 WebSocket 确认回调
+ */
+export function removeWebSocketConfirmCallback(sessionId: string): void {
+  webSocketConfirmCallbacks.delete(sessionId);
+}
+
+/**
+ * 设置当前活跃的 sessionId
+ */
+export function setActiveSessionId(sessionId: string): void {
+  activeSessionId = sessionId;
+}
+
+/**
+ * 清除当前活跃的 sessionId
+ */
+export function clearActiveSessionId(): void {
+  activeSessionId = null;
+}
+
 /**
  * 确认结果
  */
@@ -56,33 +110,77 @@ export interface ConfirmationResult {
 }
 
 /**
- * 请求用户确认危险操作
+ * 请求用户确认危险操作（使用原始 stdin 读取）
  */
 async function askUserConfirmation(command: string, analysis: DangerAnalysis): Promise<boolean> {
+  // 显示危险分析
+  console.log(formatDangerAnalysis(command, analysis));
+
+  const prompt = analysis.level === 'critical'
+    ? '\x1b[41m\x1b[37m 确定要执行此危险操作吗？输入 "YES" 确认: \x1b[0m '
+    : '\x1b[33m 是否继续执行？(y/N): \x1b[0m ';
+
+  process.stdout.write(prompt);
+
+  // 使用 Bun 的 console 直接读取一行
   return new Promise((resolve) => {
-    // 显示危险分析
-    console.log(formatDangerAnalysis(command, analysis));
+    // 设置 stdin 为原始模式以便读取
+    const stdin = process.stdin;
+    const wasRaw = stdin.isRaw;
 
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
+    if (stdin.isTTY && stdin.setRawMode) {
+      stdin.setRawMode(false);
+    }
 
-    const prompt = analysis.level === 'critical'
-      ? '\x1b[41m\x1b[37m 确定要执行此危险操作吗？输入 "YES" 确认: \x1b[0m '
-      : '\x1b[33m 是否继续执行？(y/N): \x1b[0m ';
+    let input = '';
 
-    rl.question(prompt, (answer) => {
-      rl.close();
+    const onData = (data: Buffer) => {
+      const char = data.toString();
 
-      if (analysis.level === 'critical') {
-        // Critical 级别需要输入完整的 "YES"
-        resolve(answer.trim() === 'YES');
-      } else {
-        // 其他级别 y/Y 即可
-        resolve(answer.trim().toLowerCase() === 'y');
+      // 处理回车
+      if (char === '\n' || char === '\r') {
+        stdin.removeListener('data', onData);
+        if (stdin.isTTY && stdin.setRawMode && wasRaw) {
+          stdin.setRawMode(true);
+        }
+        process.stdout.write('\n');
+
+        const answer = input.trim();
+        if (analysis.level === 'critical') {
+          resolve(answer === 'YES');
+        } else {
+          resolve(answer.toLowerCase() === 'y');
+        }
+        return;
       }
-    });
+
+      // 处理退格
+      if (char === '\x7f' || char === '\b') {
+        if (input.length > 0) {
+          input = input.slice(0, -1);
+          process.stdout.write('\b \b');
+        }
+        return;
+      }
+
+      // 处理 Ctrl+C
+      if (char === '\x03') {
+        stdin.removeListener('data', onData);
+        if (stdin.isTTY && stdin.setRawMode && wasRaw) {
+          stdin.setRawMode(true);
+        }
+        process.stdout.write('\n');
+        resolve(false);
+        return;
+      }
+
+      // 普通字符
+      input += char;
+      process.stdout.write(char);
+    };
+
+    stdin.on('data', onData);
+    stdin.resume();
   });
 }
 
@@ -98,6 +196,9 @@ export async function checkAndConfirm(command: string): Promise<ConfirmationResu
     return { approved: true, analysis };
   }
 
+  // 清除当前行（可能有 spinner）
+  process.stdout.write('\r\x1b[K');
+
   // 非交互模式下，危险操作自动拒绝
   if (!interactiveMode) {
     console.log(formatDangerAnalysis(command, analysis));
@@ -107,7 +208,38 @@ export async function checkAndConfirm(command: string): Promise<ConfirmationResu
     return { approved: false, analysis };
   }
 
-  // 交互模式下请求用户确认
+  // TUI 模式下，危险操作自动批准（因为 stdin 被 TUI 占用）
+  // 但会显示警告信息
+  if (tuiMode) {
+    console.log(formatDangerAnalysis(command, analysis));
+    console.log('\x1b[33m[TUI 模式] 危险操作已自动批准（stdin 被 TUI 占用）\x1b[0m\n');
+
+    // 仍然记录到审计日志
+    await logApproved(currentSessionId, command, analysis.level, analysis.reasons, { success: true });
+    return { approved: true, analysis };
+  }
+
+  // WebSocket 模式下，通过 WebSocket 请求确认
+  // 使用当前活跃的 sessionId 查找对应的回调
+  if (activeSessionId) {
+    const callback = webSocketConfirmCallbacks.get(activeSessionId);
+    if (callback) {
+      console.log(`[WebSocket] Requesting user confirmation for session ${activeSessionId}...`);
+      const approved = await callback(command, analysis);
+
+      if (approved) {
+        console.log('\x1b[32m✓ User confirmed via WebSocket\x1b[0m\n');
+        await logApproved(currentSessionId, command, analysis.level, analysis.reasons, { success: true });
+      } else {
+        console.log('\x1b[31m✗ User rejected via WebSocket\x1b[0m\n');
+        await logRejected(currentSessionId, command, analysis.level, analysis.reasons);
+      }
+
+      return { approved, analysis };
+    }
+  }
+
+  // 交互模式下请求用户确认（终端）
   const approved = await askUserConfirmation(command, analysis);
 
   if (approved) {

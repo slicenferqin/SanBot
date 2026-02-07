@@ -171,6 +171,8 @@ AI 助手信息：
     messages: [{ role: 'user', content: prompt }],
   });
 
-  const text = response.content[0].type === 'text' ? response.content[0].text : '';
-  return text;
+  const textBlock = response.content.find(
+    (block): block is Anthropic.TextBlock => block.type === 'text'
+  );
+  return textBlock?.text ?? '';
 }

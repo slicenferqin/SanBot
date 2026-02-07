@@ -176,6 +176,13 @@ export class Agent {
   }
 
   /**
+   * 获取当前会话 ID
+   */
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
+  /**
    * 清空对话历史
    */
   clearHistory(): void {
@@ -1017,12 +1024,16 @@ Current working directory: ${process.cwd()}`;
       console.log(pc.cyan.bold('🤖 SanBot:'));
     }
 
-    // 使用 textStream 获取文本流（AI SDK 会自动处理工具调用）
+    // 使用 fullStream 获取完整流（包括文本和工具调用）
     let fullResponse = '';
-    for await (const chunk of result.textStream) {
-      if (chunk != null && chunk !== '') {
-        streamWriter.write(chunk);
-        fullResponse += chunk;
+    for await (const part of result.fullStream) {
+      if (part.type === 'text-delta') {
+        // AI SDK v6 fullStream 的 text-delta 字段名为 text
+        const delta = (part as any).text || (part as any).textDelta;
+        if (delta) {
+          streamWriter.write(delta);
+          fullResponse += delta;
+        }
       }
     }
 

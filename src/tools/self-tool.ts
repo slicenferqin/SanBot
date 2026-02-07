@@ -4,7 +4,13 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { $ } from 'bun';
 import type { ToolDef, ToolResult } from './registry.ts';
-import { registerTool, loadToolRegistry, TOOLS_DIR } from './tool-registry-center.ts';
+import {
+  registerTool,
+  loadToolRegistry,
+  TOOLS_DIR,
+  updateToolUsage,
+  appendToolLog,
+} from './tool-registry-center.ts';
 
 /**
  * 确保工具目录存在
@@ -48,12 +54,40 @@ export const createToolTool: ToolDef = {
         type: 'object',
         description: '工具的参数定义（JSON Schema 格式），用于注册到工具中心',
       },
+      version: {
+        type: 'string',
+        description: '工具版本，默认 0.1.0',
+      },
+      tags: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '工具标签，例如 data/doc/qa',
+      },
+      owner: {
+        type: 'string',
+        enum: ['agent', 'user', 'system'],
+        description: '工具归属，默认 agent',
+      },
     },
     required: ['name', 'description', 'language', 'code'],
   },
 
   async execute(params): Promise<ToolResult> {
-    const { name, description, language, code, parameters } = params;
+    const {
+      name,
+      description,
+      language,
+      code,
+      parameters,
+      version = '0.1.0',
+      tags = [],
+      owner = 'agent',
+    } = params;
+    const normalizedOwner = owner === 'user' || owner === 'system' || owner === 'agent' ? owner : 'agent';
+    const normalizedVersion = typeof version === 'string' && version.trim().length > 0 ? version.trim() : '0.1.0';
+    const normalizedTags = Array.isArray(tags)
+      ? tags.filter((item: unknown) => typeof item === 'string' && item.trim().length > 0).map((item: string) => item.trim())
+      : [];
 
     // 验证工具名称
     if (!/^[a-z][a-z0-9_]*$/.test(name)) {
@@ -96,6 +130,9 @@ export const createToolTool: ToolDef = {
         },
         createdAt: now,
         updatedAt: now,
+        version: normalizedVersion,
+        tags: normalizedTags,
+        owner: normalizedOwner,
       });
 
       // 测试工具是否可执行
@@ -154,7 +191,16 @@ export const listToolsTool: ToolDef = {
         name: t.name,
         description: t.description,
         language: t.language,
+        version: t.version,
+        tags: t.tags,
+        owner: t.owner,
+        lastUsedAt: t.lastUsedAt,
+        successCount: t.successCount,
+        failureCount: t.failureCount,
+        lastError: t.lastError,
         createdAt: t.createdAt,
+        healthStatus: t.healthStatus,
+        lastValidationAt: t.lastValidationAt,
       }));
 
       return {
@@ -214,6 +260,7 @@ export const runToolTool: ToolDef = {
     try {
       let result;
       const command = args ? `${toolPath} ${args}` : toolPath;
+      const startedAt = Date.now();
 
       if (stdin) {
         result = await $`echo ${stdin} | sh -c ${command}`.quiet();
@@ -222,15 +269,47 @@ export const runToolTool: ToolDef = {
       }
 
       const stdout = await result.text();
+      const success = result.exitCode === 0;
+
+      await updateToolUsage(name, {
+        success,
+        error: success ? undefined : `exit code ${result.exitCode}`,
+      });
+
+      await appendToolLog(name, {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        tool: name,
+        timestamp: new Date().toISOString(),
+        durationMs: Date.now() - startedAt,
+        success,
+        params: args || stdin ? { args: args || undefined, stdin: stdin || undefined } : undefined,
+        stdout: stdout.slice(0, 4000),
+        error: success ? undefined : `exit code ${result.exitCode}`,
+      });
 
       return {
-        success: result.exitCode === 0,
+        success,
         data: {
           stdout,
           exitCode: result.exitCode,
         },
       };
     } catch (error: any) {
+      await updateToolUsage(name, {
+        success: false,
+        error: error.message,
+      });
+
+      await appendToolLog(name, {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        tool: name,
+        timestamp: new Date().toISOString(),
+        success: false,
+        params: args || stdin ? { args: args || undefined, stdin: stdin || undefined } : undefined,
+        stderr: error.stderr?.toString()?.slice(0, 2000),
+        error: error.message,
+      });
+
       return {
         success: false,
         error: error.message,

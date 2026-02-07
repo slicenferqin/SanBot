@@ -15,12 +15,13 @@ export const MEMORY_DIR = join(homedir(), '.sanbot', 'memory');
 export const DAILY_DIR = join(MEMORY_DIR, 'daily');
 export const EXTRACTED_DIR = join(MEMORY_DIR, 'extracted');
 export const SUMMARY_DIR = join(MEMORY_DIR, 'summary');
+export const SESSION_SUMMARY_DIR = join(MEMORY_DIR, 'session-summaries');
 
 /**
  * 确保目录存在
  */
 async function ensureDirs(): Promise<void> {
-  for (const dir of [MEMORY_DIR, DAILY_DIR, EXTRACTED_DIR, SUMMARY_DIR]) {
+  for (const dir of [MEMORY_DIR, DAILY_DIR, EXTRACTED_DIR, SUMMARY_DIR, SESSION_SUMMARY_DIR]) {
     if (!existsSync(dir)) {
       await mkdir(dir, { recursive: true });
     }
@@ -31,7 +32,8 @@ async function ensureDirs(): Promise<void> {
  * 获取今天的日期字符串
  */
 function getTodayDate(): string {
-  return new Date().toISOString().split('T')[0];
+  const [date] = new Date().toISOString().split('T');
+  return date || new Date().toISOString();
 }
 
 /**
@@ -103,4 +105,31 @@ export async function listDailyDates(): Promise<string[]> {
  */
 export async function loadTodayConversations(): Promise<ConversationRecord[]> {
   return loadDailyConversations(getTodayDate());
+}
+
+/**
+ * 按 sessionId 读取今天的对话记录
+ */
+export async function loadSessionConversations(sessionId: string): Promise<ConversationRecord[]> {
+  const all = await loadTodayConversations();
+  return all.filter((c) => c.sessionId === sessionId);
+}
+
+export async function appendSessionSummary(sessionId: string, summary: string): Promise<void> {
+  if (!summary) return;
+  await ensureDirs();
+  const summaryFile = join(SESSION_SUMMARY_DIR, `${sessionId}.md`);
+  const timestamp = new Date().toISOString();
+  const content = '## ' + timestamp + '\n' + summary + '\n\n';
+  await appendFile(summaryFile, content, 'utf-8');
+}
+
+export async function appendExtractedMemory(category: string, text: string): Promise<void> {
+  const trimmed = text?.trim();
+  if (!trimmed) return;
+  await ensureDirs();
+  const filePath = join(EXTRACTED_DIR, `${category}.md`);
+  const timestamp = new Date().toISOString();
+  const line = '- [' + timestamp + '] ' + trimmed + '\n';
+  await appendFile(filePath, line, 'utf-8');
 }

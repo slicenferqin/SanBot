@@ -1,6 +1,7 @@
 import { readdir, stat } from 'fs/promises';
 import { join } from 'path';
 import type { ToolDef, ToolResult } from './registry.ts';
+import { recordContextEvent } from '../context/tracker.ts';
 
 /**
  * list_dir 工具 - 列出目录内容
@@ -37,13 +38,24 @@ export const listDirTool: ToolDef = {
     try {
       const entries = await listDirectory(path, recursive, maxDepth, 0, pattern);
 
-      return {
+      const response = {
         success: true,
         data: {
           entries,
         },
       };
+      await recordContextEvent({
+        source: 'list_dir',
+        summary: `${path} (${entries.length} entries)`,
+        detail: recursive ? `recursive depth=${maxDepth} pattern=${pattern || 'n/a'}` : pattern ? `pattern=${pattern}` : undefined,
+      });
+      return response;
     } catch (error: any) {
+      await recordContextEvent({
+        source: 'list_dir',
+        summary: `Failed to list ${path}`,
+        detail: error.message,
+      });
       return {
         success: false,
         error: `Failed to list directory: ${error.message}`,

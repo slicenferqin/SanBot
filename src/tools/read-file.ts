@@ -1,5 +1,6 @@
 import { readFile } from 'fs/promises';
 import type { ToolDef, ToolResult } from './registry.ts';
+import { recordContextEvent } from '../context/tracker.ts';
 
 /**
  * read_file 工具 - 读取文件内容
@@ -46,7 +47,7 @@ export const readFileTool: ToolDef = {
       const selectedLines = lines.slice(start, actualEnd);
       const resultContent = selectedLines.join('\n');
 
-      return {
+      const response = {
         success: true,
         data: {
           content: resultContent,
@@ -56,7 +57,18 @@ export const readFileTool: ToolDef = {
           endLine: actualEnd,
         },
       };
+      await recordContextEvent({
+        source: 'read_file',
+        summary: `${path} (${start + 1}-${actualEnd})`,
+        detail: truncatedMessage(start + 1, actualEnd, totalLines, resultContent.length),
+      });
+      return response;
     } catch (error: any) {
+      await recordContextEvent({
+        source: 'read_file',
+        summary: `Failed to read ${path}`,
+        detail: error.message,
+      });
       return {
         success: false,
         error: `Failed to read file: ${error.message}`,
@@ -64,3 +76,8 @@ export const readFileTool: ToolDef = {
     }
   },
 };
+
+function truncatedMessage(start: number, end: number, total: number, chars: number): string {
+  const truncated = end < total ? 'truncated' : 'full';
+  return `${start}-${end} of ${total} lines (${truncated}, ${chars} chars)`;
+}
