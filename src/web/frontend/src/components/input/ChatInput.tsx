@@ -43,6 +43,12 @@ export function ChatInput() {
 
   const openDrawer = useUIStore((state) => state.openDrawer)
 
+  const keyboardHint = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac')
+    ? '⌘↵ send · ⌘K focus'
+    : 'Ctrl+Enter send · Ctrl+K focus'
+
+  const sessionLabel = sessionId ? `Session ${sessionId.slice(0, 8)}` : 'No session'
+
   const availableModels = useMemo(() => {
     if (models.length > 0) {
       return models
@@ -128,12 +134,12 @@ export function ChatInput() {
             className="w-full min-h-[84px] max-h-[260px] bg-transparent text-[20px] sm:text-[24px] lg:text-[28px] leading-[1.35] text-txt-1 placeholder:text-txt-3 resize-none border-none outline-none disabled:opacity-50 disabled:cursor-not-allowed"
           />
 
-          <div className="mt-4 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 flex-wrap">
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
               <button
                 type="button"
                 onClick={() => openDrawer('tools')}
-                className="h-10 w-10 rounded-full border border-border-1 bg-bg-2 text-txt-2 hover:text-txt-1 hover:bg-bg-3 transition-colors"
+                className="h-11 w-11 rounded-full border border-border-1 bg-bg-2 text-txt-2 hover:text-txt-1 hover:bg-bg-3 transition-colors"
                 title="Open tools"
               >
                 <svg className="w-5 h-5 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -141,7 +147,7 @@ export function ChatInput() {
                 </svg>
               </button>
 
-              <label className="inline-flex items-center gap-2 px-3 h-10 rounded-full border border-border-1 bg-bg-2 text-sm text-txt-2">
+              <label className="inline-flex items-center gap-2 px-3 h-11 rounded-full border border-border-1 bg-bg-2 text-sm text-txt-2">
                 <span className="text-txt-3">Model</span>
                 <select
                   value={model}
@@ -161,7 +167,7 @@ export function ChatInput() {
                 </select>
               </label>
 
-              <label className="inline-flex items-center gap-2 px-3 h-10 rounded-full border border-border-1 bg-bg-2 text-sm text-txt-2">
+              <label className="inline-flex items-center gap-2 px-3 h-11 rounded-full border border-border-1 bg-bg-2 text-sm text-txt-2">
                 <span className="text-txt-3">Effort</span>
                 <select
                   value={effortPreset}
@@ -181,7 +187,7 @@ export function ChatInput() {
             {isStreaming ? (
               <button
                 onClick={stopGeneration}
-                className="h-12 w-12 rounded-full bg-error hover:bg-error/80 text-white transition-colors"
+                className="h-11 w-11 sm:h-12 sm:w-12 rounded-full bg-error hover:bg-error/80 text-white transition-colors self-end"
                 title="Stop generation"
               >
                 <svg className="w-5 h-5 mx-auto" fill="currentColor" viewBox="0 0 24 24">
@@ -192,7 +198,7 @@ export function ChatInput() {
               <button
                 onClick={handleSubmit}
                 disabled={!input.trim() || !isConnected}
-                className="h-12 w-12 rounded-full bg-accent hover:bg-accent/80 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="h-11 w-11 sm:h-12 sm:w-12 rounded-full bg-accent hover:bg-accent/80 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed self-end"
                 title="Send message (⌘↵)"
               >
                 <svg className="w-5 h-5 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -203,14 +209,11 @@ export function ChatInput() {
           </div>
         </div>
 
-        <div className="flex items-center justify-between px-1 text-xs text-txt-3">
-          <div className="flex items-center gap-4">
-            <span>Local</span>
-            <span>Default permission</span>
-          </div>
-          <div className="flex items-center gap-4">
-            <span className="truncate max-w-[260px]">{sessionId ? `Session ${sessionId.slice(0, 8)}` : 'No session'}</span>
-            <span>{providerId || 'No provider'}</span>
+        <div className="flex flex-col gap-1 px-1 text-xs text-txt-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="truncate">{keyboardHint}</div>
+          <div className="flex items-center gap-3">
+            <span className="truncate max-w-[220px]">{sessionLabel}</span>
+            <span className="truncate max-w-[200px]">{model || providerId || 'No model'}</span>
           </div>
         </div>
       </div>

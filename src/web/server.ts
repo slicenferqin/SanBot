@@ -532,7 +532,21 @@ export async function startWebServer(port: number = 3000) {
           : 50;
 
         const sessions = await listSessionDigests({ days, limit });
-        return Response.json({ sessions });
+        const sessionsWithLLM = await Promise.all(sessions.map(async (session) => {
+          const llm = await loadSessionLLMConfig(session.sessionId);
+          return {
+            ...session,
+            llm: llm
+              ? {
+                  providerId: llm.providerId,
+                  model: llm.model,
+                  temperature: llm.temperature,
+                  updatedAt: llm.updatedAt,
+                }
+              : null,
+          };
+        }));
+        return Response.json({ sessions: sessionsWithLLM });
       }
 
       return new Response('Not Found', { status: 404 });

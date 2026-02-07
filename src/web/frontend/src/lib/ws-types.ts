@@ -252,6 +252,13 @@ export interface ContextResponse {
 }
 
 // Session list types
+export interface SessionLLMConfig {
+  providerId: string
+  model: string
+  temperature: number
+  updatedAt: string
+}
+
 export interface SessionDigest {
   sessionId: string
   title: string
@@ -259,6 +266,7 @@ export interface SessionDigest {
   lastActivityAt: string
   turns: number
   preview: string
+  llm?: SessionLLMConfig | null
 }
 
 export interface SessionsResponse {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useUIStore } from '@/stores/ui'
 import { useConnectionStore } from '@/stores/connection'
 import { useChatStore } from '@/stores/chat'
@@ -7,10 +7,39 @@ import { fetchSessions } from '@/lib/api'
 import type { SessionDigest } from '@/lib/ws-types'
 import { formatDateTime, formatRelativeTime } from '@/lib/format'
 
+function truncateMiddle(text: string, head = 8, tail = 6): string {
+  const normalized = text.trim()
+  if (normalized.length <= head + tail + 3) {
+    return normalized
+  }
+  return `${normalized.slice(0, head)}...${normalized.slice(-tail)}`
+}
+
+function buildSessionModelLabel(
+  session: SessionDigest,
+  providerName?: string,
+): { label: string; title: string } | null {
+  const llm = session.llm
+  if (!llm) {
+    return null
+  }
+
+  const providerTokenSource = (providerName || llm.providerId).trim()
+  const providerToken = providerTokenSource.split(/\s+/)[0] || llm.providerId
+  const compactProvider = truncateMiddle(providerToken, 6, 4)
+  const compactModel = truncateMiddle(llm.model, 8, 6)
+
+  return {
+    label: `${compactProvider}/${compactModel}`,
+    title: `${providerName || llm.providerId} · ${llm.model} · temp ${llm.temperature.toFixed(2)}`,
+  }
+}
+
 export function Sidebar() {
   const { sidebarOpen, setSidebarOpen } = useUIStore()
   const sessionId = useConnectionStore((state) => state.sessionId)
   const setSessionId = useConnectionStore((state) => state.setSessionId)
+  const providers = useConnectionStore((state) => state.providers)
 
   const clearMessages = useChatStore((state) => state.clearMessages)
   const isStreaming = useChatStore((state) => state.isStreaming)
@@ -27,6 +56,14 @@ export function Sidebar() {
   const [sessions, setSessions] = useState<SessionDigest[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const providerNameById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const provider of providers) {
+      map.set(provider.id, provider.name)
+    }
+    return map
+  }, [providers])
 
   const loadSessions = useCallback(async () => {
     setLoading(true)
@@ -125,6 +162,10 @@ export function Sidebar() {
 
           {!loading && sessions.map((session) => {
             const isActive = session.sessionId === sessionId
+            const providerName = session.llm
+              ? providerNameById.get(session.llm.providerId)
+              : undefined
+            const modelBadge = buildSessionModelLabel(session, providerName)
 
             return (
               <button
@@ -137,9 +178,19 @@ export function Sidebar() {
                 }`}
                 title={`${session.sessionId}\nStarted: ${formatDateTime(session.startedAt)}\nLast activity: ${formatDateTime(session.lastActivityAt)}`}
               >
-                <div className="flex items-center gap-2">
-                  <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-accent' : 'bg-txt-4'}`} />
-                  <span className="text-sm text-txt-1 truncate">{session.title}</span>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-accent' : 'bg-txt-4'}`} />
+                    <span className="text-sm text-txt-1 truncate">{session.title}</span>
+                  </div>
+                  {modelBadge && (
+                    <span
+                      className="shrink-0 max-w-[112px] truncate rounded-full border border-border-1 px-2 py-0.5 text-[10px] text-txt-2"
+                      title={modelBadge.title}
+                    >
+                      {modelBadge.label}
+                    </span>
+                  )}
                 </div>
 
                 <div className="mt-1 text-[11px] text-txt-3 line-clamp-2">

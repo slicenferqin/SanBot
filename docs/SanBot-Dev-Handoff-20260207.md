@@ -22,11 +22,16 @@
   - session 绑定时恢复模型配置
   - session 初始化、`llm_update`、`/new` 后自动落盘
 - 输入区重构为 Codex 风格大 composer（大圆角、多行、大字号、模型/effort 内联、发送/停止圆按钮）
+- 侧栏会话卡新增模型徽章（provider/model 简写），会话切换可见模型上下文
+- `/api/sessions` 响应已扩展 `llm` 字段（providerId/model/temperature/updatedAt）
+- 补充 WebUI API/WS 契约文档：`docs/WebUI-API-Contracts-20260207.md`
+- 输入框完成第二轮细节打磨：移动端触控尺寸、快捷键提示、底部状态信息精简
 
 ## 代码与提交
 - 已推送远端：`main` 分支
-- 最新提交：`9d931c6`
-- 提交信息：`feat(web): improve session UX and persist session-scoped llm config`
+- 关键提交：
+  - `9d931c6` `feat(web): improve session UX and persist session-scoped llm config`
+  - `fb68483` `docs: add 2026-02-07 handoff and next-step plan`
 
 ## 本次新增/重点文件
 - 后端
@@ -60,18 +65,15 @@
 - 参数默认脱敏展示
 
 ## 今日后续建议（按优先级）
-1. 侧栏显示会话模型徽章（P0）
-   - 在会话卡片展示 `provider/model` 简写，减少“盲切”
-   - 后端会话列表 API 可选追加模型字段（从 session-config 读取）
-2. 会话切换与模型恢复端到端回归脚本化（P0）
+1. 会话切换与模型恢复端到端回归（P0）
    - 场景：A=Opus、B=GLM、重启服务、切回验证
-   - 输出可复用的手工 checklist（供每次发布前复验）
-3. 输入框第二轮视觉打磨（P1）
-   - 统一移动端字号、按钮 hit area、禁用态对比度
-   - 底部状态文案简化（减少噪声）
-4. API/WS 契约文档补齐（P1）
-   - 补 `/api/sessions`、`/api/context` 参数说明
-   - 补 `tool_start/tool_end/turn_summary` 示例
+   - 建议录制一次 60 秒验证视频，便于后续回归对照
+2. 为 `/api/sessions` 增加可选 provider 名称字段（P1）
+   - 当前前端用本地 provider 列表映射名称，后端直出可减少耦合
+3. 增加会话模型恢复的集成测试（P1）
+   - 重点覆盖服务重启后恢复与 provider 缺失回退
+4. 输入区继续微调（P2）
+   - 仅保留必要状态信息，观察真实使用后的噪声反馈
 
 ## 风险与注意事项
 - 前端依赖本地缓存 + URL `sessionId` + cookie 三路同步，调试时需注意“旧标签页干扰”
@@ -79,6 +81,6 @@
 - 会话模型持久化当前只保存 provider/model/temperature，不保存 API Key 明文（按 provider 解析）
 
 ## 建议下一位接手者先做
-1. 完成“侧栏模型徽章 + `/api/sessions` 扩展”
+1. 执行一次完整 E2E 回归：切会话 + 切模型 + 刷新 + 重启后恢复
 2. 补 1 个服务重启后 session 模型恢复的集成测试（或半集成）
-3. 录制一次 60 秒回归视频（切会话 + 切模型 + 刷新 + 重启后恢复）
+3. 根据真实使用反馈微调输入区信息密度与侧栏模型标签长度
