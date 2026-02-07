@@ -67,6 +67,15 @@ export function Header() {
 
         <div className="flex items-center gap-1">
           <button
+            onClick={() => openDrawer('context')}
+            className="p-1.5 rounded hover:bg-bg-2 transition-colors text-txt-2 hover:text-txt-1"
+            title="Context"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h10" />
+            </svg>
+          </button>
+          <button
             onClick={() => openDrawer('audit')}
             className="p-1.5 rounded hover:bg-bg-2 transition-colors text-txt-2 hover:text-txt-1"
             title="Audit logs"

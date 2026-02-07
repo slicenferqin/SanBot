@@ -2,6 +2,8 @@
  * WebSocket message types
  */
 
+export type ToolRunStatus = 'success' | 'error'
+
 // Server -> Client messages
 export type ServerMessage =
   | { type: 'system'; message: string }
@@ -10,14 +12,48 @@ export type ServerMessage =
   | { type: 'assistant_delta'; content: string }
   | { type: 'assistant_end'; content: string }
   | { type: 'status'; status: 'idle' | 'thinking' | 'streaming' }
-  | { type: 'tool_start'; name: string; args?: Record<string, unknown> }
-  | { type: 'tool_end'; name: string; success: boolean; result?: string; error?: string }
+  | { type: 'tool_start'; id: string; name: string; input: unknown; startedAt: string }
+  | {
+      type: 'tool_end'
+      id: string
+      name: string
+      status: ToolRunStatus
+      message?: string
+      endedAt: string
+      durationMs: number
+    }
+  | {
+      type: 'turn_summary'
+      startedAt: string
+      endedAt: string
+      durationMs: number
+      tools: {
+        total: number
+        success: number
+        error: number
+      }
+      stopped?: boolean
+    }
   | { type: 'confirm_request'; id: string; command: string; level: string; reasons: string[] }
   | { type: 'chat_history'; messages: HistoryMessage[] }
   | { type: 'session_bound'; sessionId: string }
-  | { type: 'llm_config'; providerId: string; model: string; providers: ProviderInfo[]; models: string[]; temperature: number }
+  | {
+      type: 'llm_config'
+      providerId: string
+      model: string
+      providers: ProviderInfo[]
+      models: string[]
+      temperature: number
+    }
   | { type: 'llm_models'; providerId: string; models: string[] }
-  | { type: 'llm_update_result'; success: boolean; providerId?: string; model?: string; temperature?: number; error?: string }
+  | {
+      type: 'llm_update_result'
+      success: boolean
+      providerId?: string
+      model?: string
+      temperature?: number
+      error?: string
+    }
 
 // Client -> Server messages
 export type ClientMessage =
@@ -34,7 +70,7 @@ export interface HistoryMessage {
   timestamp: string
   userMessage: string
   assistantResponse: string
-  toolCalls?: Array<{ name: string; args?: string; result?: string }>
+  toolCalls?: Array<{ name: string; args?: string; result?: string; success?: boolean }>
 }
 
 // Provider info
@@ -55,13 +91,41 @@ export interface ToolCall {
   error?: string
 }
 
+export interface ToolEventPayload {
+  kind: 'tool_event'
+  toolId: string
+  name: string
+  status: 'running' | 'success' | 'error'
+  startedAt: string
+  endedAt?: string
+  durationMs?: number
+  input?: unknown
+  message?: string
+}
+
+export interface TurnSummaryPayload {
+  kind: 'turn_summary'
+  startedAt: string
+  endedAt: string
+  durationMs: number
+  tools: {
+    total: number
+    success: number
+    error: number
+  }
+  stopped?: boolean
+}
+
+export type EventPayload = ToolEventPayload | TurnSummaryPayload
+
 export interface ChatMessage {
   id: string
-  role: 'user' | 'assistant' | 'system'
+  role: 'user' | 'assistant' | 'system' | 'event'
   content: string
   timestamp: number
   toolCalls?: ToolCall[]
   isStreaming?: boolean
+  event?: EventPayload
 }
 
 // Confirmation request
@@ -151,16 +215,52 @@ export interface ToolLog {
 }
 
 // Context types
+export interface ContextSessionSummary {
+  sessionId: string | null
+  conversationCount: number
+  lastActivityAt: string | null
+}
+
+export interface ContextEvent {
+  timestamp: string
+  source: string
+  summary: string
+  detail?: string
+  sessionId?: string
+}
+
+export interface ContextExtracted {
+  runtime?: string[]
+  decisions?: string[]
+  facts?: string[]
+  preferences?: string[]
+}
+
 export interface ContextResponse {
   updatedAt: string
   summary: string | null
+  session: ContextSessionSummary
   recentConversations: {
     timestamp: string
     userMessage: string
     assistantResponse: string
   }[]
   totalConversations: number
-  events: unknown[]
-  extracted: unknown
+  events: ContextEvent[]
+  extracted: ContextExtracted | null
   injection: string
+}
+
+// Session list types
+export interface SessionDigest {
+  sessionId: string
+  title: string
+  startedAt: string
+  lastActivityAt: string
+  turns: number
+  preview: string
+}
+
+export interface SessionsResponse {
+  sessions: SessionDigest[]
 }

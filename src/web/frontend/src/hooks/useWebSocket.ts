@@ -51,6 +51,9 @@ function persistSessionId(sessionId: string): void {
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
+  const socketSessionIdRef = useRef<string | null>(null)
+  const suppressReconnectRef = useRef(false)
+  const unmountingRef = useRef(false)
 
   const setStatus = useConnectionStore((state) => state.setStatus)
   const setWs = useConnectionStore((state) => state.setWs)
@@ -66,103 +69,29 @@ export function useWebSocket() {
   const addToolStart = useChatStore((state) => state.addToolStart)
   const updateToolEnd = useChatStore((state) => state.updateToolEnd)
   const setConfirmation = useChatStore((state) => state.setConfirmation)
+  const addTurnSummary = useChatStore((state) => state.addTurnSummary)
   const loadHistory = useChatStore((state) => state.loadHistory)
 
-  const handleMessage = useCallback((data: ServerMessage) => {
-    switch (data.type) {
-      case 'system':
-        addSystemMessage(data.message)
-        break
-
-      case 'assistant_start':
-        startAssistant()
-        break
-
-      case 'assistant_delta':
-        appendDelta(data.content)
-        break
-
-      case 'assistant_end':
-        endAssistant(data.content)
-        break
-
-      case 'tool_start':
-        addToolStart(data.name, data.args)
-        break
-
-      case 'tool_end':
-        updateToolEnd(data.name, data.success, data.result, data.error)
-        break
-
-      case 'confirm_request':
-        setConfirmation({
-          id: data.id,
-          command: data.command,
-          level: data.level,
-          reasons: data.reasons,
-        })
-        break
-
-      case 'chat_history':
-        loadHistory(data.messages)
-        break
-
-      case 'session_bound': {
-        const nextSessionId = normalizeSessionId(data.sessionId)
-        if (nextSessionId) {
-          setSessionId(nextSessionId)
-          persistSessionId(nextSessionId)
-        }
-        break
-      }
-
-      case 'llm_config':
-        setProviderConfig({
-          providerId: data.providerId,
-          model: data.model,
-          temperature: data.temperature,
-          providers: data.providers,
-          models: data.models,
-        })
-        break
-
-      case 'llm_models':
-        setModels(data.models)
-        break
-
-      case 'llm_update_result':
-        if (!data.success && data.error) {
-          addSystemMessage(`LLM update failed: ${data.error}`)
-        }
-        break
-
-      case 'status':
-        // Status updates can be used for UI indicators
-        break
+  const connect = useCallback((force = false) => {
+    const existingSocket = wsRef.current
+    if (!force && (existingSocket?.readyState === WebSocket.OPEN || existingSocket?.readyState === WebSocket.CONNECTING)) {
+      return
     }
-  }, [
-    addSystemMessage,
-    startAssistant,
-    appendDelta,
-    endAssistant,
-    addToolStart,
-    updateToolEnd,
-    setConfirmation,
-    loadHistory,
-    setSessionId,
-    setProviderConfig,
-    setModels,
-  ])
 
-  const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
 
     setStatus('connecting')
 
-    const candidateSessionId = normalizeSessionId(sessionId) ?? readSessionIdFromStorage()
-    if (candidateSessionId && candidateSessionId !== sessionId) {
+    const currentSessionId = normalizeSessionId(useConnectionStore.getState().sessionId)
+    const candidateSessionId = currentSessionId ?? readSessionIdFromStorage()
+    if (candidateSessionId && candidateSessionId !== currentSessionId) {
       setSessionId(candidateSessionId)
     }
+
+    socketSessionIdRef.current = candidateSessionId
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = new URL(`${protocol}//${window.location.host}/ws`)
@@ -171,37 +100,144 @@ export function useWebSocket() {
     }
 
     const ws = new WebSocket(wsUrl.toString())
+    wsRef.current = ws
 
     ws.onopen = () => {
+      if (wsRef.current !== ws) return
       setStatus('connected')
       setWs(ws)
-      wsRef.current = ws
     }
 
     ws.onclose = () => {
+      if (wsRef.current !== ws) return
+
       setStatus('disconnected')
       setWs(null)
       wsRef.current = null
 
-      // Reconnect after 3 seconds
-      reconnectTimeoutRef.current = window.setTimeout(() => {
-        connect()
-      }, 3000)
+      if (suppressReconnectRef.current) {
+        suppressReconnectRef.current = false
+        if (!unmountingRef.current) {
+          connect(true)
+        }
+        return
+      }
+
+      if (!unmountingRef.current) {
+        reconnectTimeoutRef.current = window.setTimeout(() => {
+          connect()
+        }, 3000)
+      }
     }
 
     ws.onerror = () => {
+      if (wsRef.current !== ws) return
       setStatus('error')
     }
 
     ws.onmessage = (event) => {
       try {
         const data: ServerMessage = JSON.parse(event.data)
-        handleMessage(data)
+
+        switch (data.type) {
+          case 'system':
+            addSystemMessage(data.message)
+            break
+
+          case 'assistant_start':
+            startAssistant()
+            break
+
+          case 'assistant_delta':
+            appendDelta(data.content)
+            break
+
+          case 'assistant_end':
+            endAssistant(data.content)
+            break
+
+          case 'tool_start':
+            addToolStart(data)
+            break
+
+          case 'tool_end':
+            updateToolEnd(data)
+            break
+
+          case 'turn_summary':
+            addTurnSummary(data)
+            break
+
+          case 'confirm_request':
+            setConfirmation({
+              id: data.id,
+              command: data.command,
+              level: data.level,
+              reasons: data.reasons,
+            })
+            break
+
+          case 'chat_history':
+            loadHistory(data.messages)
+            break
+
+          case 'session_bound': {
+            const nextSessionId = normalizeSessionId(data.sessionId)
+            const currentSessionId = normalizeSessionId(useConnectionStore.getState().sessionId)
+
+            if (nextSessionId) {
+              socketSessionIdRef.current = nextSessionId
+              if (nextSessionId !== currentSessionId) {
+                setSessionId(nextSessionId)
+              }
+              persistSessionId(nextSessionId)
+            }
+            break
+          }
+
+          case 'llm_config':
+            setProviderConfig({
+              providerId: data.providerId,
+              model: data.model,
+              temperature: data.temperature,
+              providers: data.providers,
+              models: data.models,
+            })
+            break
+
+          case 'llm_models':
+            setModels(data.models)
+            break
+
+          case 'llm_update_result':
+            if (!data.success && data.error) {
+              addSystemMessage(`LLM update failed: ${data.error}`)
+            }
+            break
+
+          case 'status':
+            break
+        }
       } catch (e) {
         console.error('Failed to parse WebSocket message:', e)
       }
     }
-  }, [handleMessage, sessionId, setSessionId, setStatus, setWs])
+  }, [
+    setSessionId,
+    setStatus,
+    setWs,
+    addSystemMessage,
+    startAssistant,
+    appendDelta,
+    endAssistant,
+    addToolStart,
+    updateToolEnd,
+    addTurnSummary,
+    setConfirmation,
+    loadHistory,
+    setProviderConfig,
+    setModels,
+  ])
 
   useEffect(() => {
     const restoredSessionId = readSessionIdFromStorage()
@@ -211,13 +247,41 @@ export function useWebSocket() {
   }, [sessionId, setSessionId])
 
   useEffect(() => {
+    const desiredSessionId = normalizeSessionId(sessionId)
+
+    if (!desiredSessionId) {
+      return
+    }
+
+    if (desiredSessionId === socketSessionIdRef.current) {
+      return
+    }
+
+    persistSessionId(desiredSessionId)
+
+    const socket = wsRef.current
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+      suppressReconnectRef.current = true
+      socket.close()
+      return
+    }
+
+    connect(true)
+  }, [sessionId, connect])
+
+  useEffect(() => {
+    unmountingRef.current = false
     connect()
 
     return () => {
+      unmountingRef.current = true
+
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
+
       if (wsRef.current) {
+        suppressReconnectRef.current = true
         wsRef.current.close()
       }
     }

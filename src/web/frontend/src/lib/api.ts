@@ -1,4 +1,10 @@
-import type { AuditResponse, ToolsResponse, ToolLog, ContextResponse } from './ws-types'
+import type {
+  AuditResponse,
+  ToolsResponse,
+  ToolLog,
+  ContextResponse,
+  SessionsResponse,
+} from './ws-types'
 
 const API_BASE = '/api'
 
@@ -78,8 +84,35 @@ export async function runTool(name: string, args?: string, params?: Record<strin
 /**
  * Fetch context
  */
-export async function fetchContext(limit = 5): Promise<ContextResponse> {
-  const res = await fetch(`${API_BASE}/context?limit=${limit}`)
+export async function fetchContext(options?: {
+  sessionId?: string | null
+  limit?: number
+  eventsLimit?: number
+}): Promise<ContextResponse> {
+  const params = new URLSearchParams()
+
+  if (options?.sessionId) {
+    params.set('sessionId', options.sessionId)
+  }
+
+  params.set('limit', String(options?.limit ?? 5))
+  params.set('eventsLimit', String(options?.eventsLimit ?? 10))
+
+  const res = await fetch(`${API_BASE}/context?${params.toString()}`)
   if (!res.ok) throw new Error('Failed to fetch context')
+  return res.json()
+}
+
+/**
+ * Fetch recent sessions
+ */
+export async function fetchSessions(days = 7, limit = 50): Promise<SessionsResponse> {
+  const params = new URLSearchParams({
+    days: String(days),
+    limit: String(limit),
+  })
+
+  const res = await fetch(`${API_BASE}/sessions?${params.toString()}`)
+  if (!res.ok) throw new Error('Failed to fetch sessions')
   return res.json()
 }

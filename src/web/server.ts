@@ -5,13 +5,18 @@
 
 import type { ServerWebSocket } from 'bun';
 import { Agent } from '../agent.ts';
-import { getAvailableProviders, getProviderModels, loadConfig, updateActiveProvider } from '../config/loader.ts';
+import { getAvailableProviders, getProviderModels, loadConfig } from '../config/loader.ts';
 import type { Config } from '../config/types.ts';
-import { setInteractiveMode, setTuiMode, setWebSocketConfirmCallback, removeWebSocketConfirmCallback, setActiveSessionId, clearActiveSessionId, type DangerAnalysis } from '../utils/confirmation.ts';
+import { setInteractiveMode, setTuiMode, setWebSocketConfirmCallback, removeWebSocketConfirmCallback, setActiveSessionId, clearActiveSessionId, setSessionId as setConfirmationSessionId, type DangerAnalysis } from '../utils/confirmation.ts';
 import { getAuditStats, getTodayAuditLogs, type AuditEntry } from '../utils/audit-log.ts';
 import { loadToolRegistry, getToolLogs, getToolMeta, createDynamicToolDef } from '../tools/tool-registry-center.ts';
 import { getSessionContext, formatMemoryContext } from '../memory/retrieval.ts';
-import { loadSessionConversations } from '../memory/storage.ts';
+import {
+  loadSessionConversations,
+  listSessionDigests,
+  loadSessionLLMConfig,
+  saveSessionLLMConfig,
+} from '../memory/storage.ts';
 import { runToolTool } from '../tools/self-tool.ts';
 import { WebStreamWriter, WebToolSpinner, type WebSocketMessage } from './adapters.ts';
 import { join } from 'path';
@@ -457,28 +462,77 @@ export async function startWebServer(port: number = 3000) {
       }
 
       if (url.pathname === '/api/context') {
+        const sessionId = normalizeSessionId(url.searchParams.get('sessionId'));
+
         const limitParam = url.searchParams.get('limit');
         const parsedLimit = limitParam ? Number.parseInt(limitParam, 10) : 5;
-        const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 20) : 5;
+        const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
+          ? Math.min(parsedLimit, 20)
+          : 5;
+
+        const eventsLimitParam = url.searchParams.get('eventsLimit');
+        const parsedEventsLimit = eventsLimitParam ? Number.parseInt(eventsLimitParam, 10) : 10;
+        const eventsLimit = Number.isFinite(parsedEventsLimit) && parsedEventsLimit > 0
+          ? Math.min(parsedEventsLimit, 100)
+          : 10;
+
         const context = await getSessionContext();
-        const injection = formatMemoryContext(context);
-        const recentConversations = context.todayConversations
+
+        const conversationsSource = sessionId
+          ? await loadSessionConversations(sessionId, { scope: 'all' })
+          : context.todayConversations;
+
+        const contextForInjection = sessionId
+          ? { ...context, todayConversations: conversationsSource }
+          : context;
+        const injection = formatMemoryContext(contextForInjection);
+
+        const recentConversations = conversationsSource
           .slice(-limit)
           .map((entry) => ({
             timestamp: entry.timestamp,
             userMessage: entry.userMessage,
             assistantResponse: entry.assistantResponse,
           }));
-        const events = await getRecentContextEvents(10);
+
+        const conversationCount = conversationsSource.length;
+        const lastActivityAt = conversationCount > 0
+          ? (conversationsSource[conversationCount - 1]?.timestamp ?? null)
+          : null;
+
+        const events = await getRecentContextEvents(eventsLimit, sessionId ?? undefined);
+
         return Response.json({
           updatedAt: new Date().toISOString(),
           summary: context.summary || null,
+          session: {
+            sessionId: sessionId ?? null,
+            conversationCount,
+            lastActivityAt,
+          },
           recentConversations,
-          totalConversations: context.todayConversations.length,
+          totalConversations: conversationCount,
           events,
           extracted: context.extracted || null,
           injection,
         });
+      }
+
+      if (url.pathname === '/api/sessions') {
+        const daysParam = url.searchParams.get('days');
+        const parsedDays = daysParam ? Number.parseInt(daysParam, 10) : 7;
+        const days = Number.isFinite(parsedDays) && parsedDays > 0
+          ? Math.min(parsedDays, 30)
+          : 7;
+
+        const limitParam = url.searchParams.get('limit');
+        const parsedLimit = limitParam ? Number.parseInt(limitParam, 10) : 50;
+        const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
+          ? Math.min(parsedLimit, 200)
+          : 50;
+
+        const sessions = await listSessionDigests({ days, limit });
+        return Response.json({ sessions });
       }
 
       return new Response('Not Found', { status: 404 });
@@ -488,17 +542,16 @@ export async function startWebServer(port: number = 3000) {
       open(ws: ServerWebSocket<WebSocketData>) {
         console.log('✅ Client connected');
 
-        const providerId = resolveProviderId(ws.data.config);
-        sendProviderConfig(ws, providerId).catch((error) => {
-          console.warn('[WebSocket] Failed to send provider config:', error);
-        });
-
         const initAgent = async () => {
           let sessionBindResult: SessionBindResult | null = null;
           let preloadedSessionConversations: Awaited<ReturnType<typeof loadSessionConversations>> | null = null;
 
           // 优先按客户端请求的 sessionId 绑定（页面刷新/重启恢复）
           const requestedSessionId = ws.data.requestedSessionId;
+          const requestedSessionLLMConfig = requestedSessionId
+            ? await resolveSessionLLMConfig(ws.data.config, ws.data.llmConfig, requestedSessionId)
+            : null;
+
           if (requestedSessionId) {
             const pooledAgent = sessionPool.get(requestedSessionId);
             if (pooledAgent) {
@@ -516,7 +569,7 @@ export async function startWebServer(port: number = 3000) {
               if (persisted.length > 0) {
                 preloadedSessionConversations = persisted;
                 const restoredAgent = new Agent({
-                  llmConfig: ws.data.llmConfig,
+                  llmConfig: requestedSessionLLMConfig ?? ws.data.llmConfig,
                   maxSteps: ws.data.maxSteps,
                   sessionId: requestedSessionId,
                 });
@@ -532,13 +585,24 @@ export async function startWebServer(port: number = 3000) {
                 };
                 console.log(`[WebSocket] Restored requested session from memory: ${requestedSessionId}`);
               } else {
-                console.warn(`[WebSocket] Requested session not found: ${requestedSessionId}`);
+                console.warn(`[WebSocket] Requested session not found: ${requestedSessionId}, creating empty requested session`);
+                const requestedAgent = new Agent({
+                  llmConfig: requestedSessionLLMConfig ?? ws.data.llmConfig,
+                  maxSteps: ws.data.maxSteps,
+                  sessionId: requestedSessionId,
+                });
+                await requestedAgent.init();
+                sessionBindResult = {
+                  agent: requestedAgent,
+                  sessionId: requestedSessionId,
+                  createdNew: false,
+                };
               }
             }
           }
 
           // 回退：复用当前活跃 session（兼容旧行为）
-          if (!sessionBindResult) {
+          if (!sessionBindResult && !requestedSessionId) {
             const fallbackAgent = activeSessionIdForPool ? sessionPool.get(activeSessionIdForPool) : null;
             if (fallbackAgent) {
               const fallbackSessionId = fallbackAgent.getSessionId();
@@ -569,9 +633,19 @@ export async function startWebServer(port: number = 3000) {
 
           const { agent, sessionId, createdNew } = sessionBindResult;
           ws.data.agent = agent;
+          setConfirmationSessionId(sessionId);
           ws.data.requestedSessionId = sessionId;
+          ws.data.llmConfig = agent.getConfig().llmConfig;
+          await persistSessionLLMState(sessionId, ws.data.config, ws.data.llmConfig);
           sessionPool.set(sessionId, agent);
           activeSessionIdForPool = sessionId;
+
+          try {
+            const providerId = resolveProviderId(ws.data.config, ws.data.llmConfig);
+            await sendProviderConfig(ws, providerId, ws.data.llmConfig);
+          } catch (error) {
+            console.warn('[WebSocket] Failed to send provider config:', error);
+          }
 
           const sessionBoundMsg: WebSocketMessage = {
             type: 'session_bound',
@@ -598,6 +672,7 @@ export async function startWebServer(port: number = 3000) {
                     name: t.name,
                     args: t.args,
                     result: t.result,
+                    success: t.success,
                   })),
                 })),
               };
@@ -707,13 +782,19 @@ export async function startWebServer(port: number = 3000) {
           }
 
           if (data.type === 'llm_get_providers') {
-            const providerId = resolveProviderId(ws.data.config);
-            await sendProviderConfig(ws, providerId);
+            const currentLLMConfig = ws.data.agent?.getConfig().llmConfig ?? ws.data.llmConfig;
+            ws.data.llmConfig = currentLLMConfig;
+            const providerId = resolveProviderId(ws.data.config, currentLLMConfig);
+            await sendProviderConfig(ws, providerId, currentLLMConfig);
             return;
           }
 
           if (data.type === 'llm_get_models') {
-            const models = await getProviderModels(data.providerId, ws.data.config);
+            const models = await getProviderModels(
+              data.providerId,
+              ws.data.config,
+              ws.data.llmConfig.apiKey
+            );
             const modelsMsg: WebSocketMessage = {
               type: 'llm_models',
               providerId: data.providerId,
@@ -725,30 +806,36 @@ export async function startWebServer(port: number = 3000) {
 
           if (data.type === 'llm_update') {
             try {
-              const requestedTemperature =
-                typeof data.temperature === 'number'
-                  ? data.temperature
-                  : ws.data.config.llm.temperature;
-              await updateActiveProvider(
+              const activeAgent = ws.data.agent;
+              if (!activeAgent) {
+                throw new Error('Agent is still initializing');
+              }
+
+              const nextLLMConfig = buildSessionLLMConfig(
                 ws.data.config,
+                ws.data.llmConfig,
                 data.providerId,
                 data.model,
-                ws.data.config.llm.apiKey,
-                { temperature: requestedTemperature }
+                data.temperature
               );
-              ws.data.llmConfig = ws.data.config.llm;
-              if (ws.data.agent) {
-                ws.data.agent.updateLLMConfig(ws.data.config.llm);
-              }
+
+              ws.data.llmConfig = nextLLMConfig;
+              activeAgent.updateLLMConfig(nextLLMConfig);
+              await persistSessionLLMState(
+                activeAgent.getSessionId(),
+                ws.data.config,
+                nextLLMConfig
+              );
+
               const okMsg: WebSocketMessage = {
                 type: 'llm_update_result',
                 success: true,
                 providerId: data.providerId,
                 model: data.model,
-                temperature: ws.data.config.llm.temperature,
+                temperature: nextLLMConfig.temperature,
               };
               ws.send(JSON.stringify(okMsg));
-              await sendProviderConfig(ws, data.providerId);
+              await sendProviderConfig(ws, data.providerId, nextLLMConfig);
             } catch (updateError: any) {
               const errMsg: WebSocketMessage = {
                 type: 'llm_update_result',
@@ -781,6 +868,9 @@ export async function startWebServer(port: number = 3000) {
               setActiveSessionId(connectionId);
             }
 
+            const sessionId = agent.getSessionId();
+            setConfirmationSessionId(sessionId);
+
             // 回显用户消息
             const userMsg: WebSocketMessage = {
               type: 'user_message',
@@ -795,15 +885,32 @@ export async function startWebServer(port: number = 3000) {
             };
             ws.send(JSON.stringify(statusMsg));
 
-            // 开始助手消息
             const startMsg: WebSocketMessage = {
               type: 'assistant_start',
             };
             ws.send(JSON.stringify(startMsg));
 
+            const turnStartedAtMs = Date.now();
+            const turnTools = {
+              total: 0,
+              success: 0,
+              error: 0,
+            };
+
             // 创建适配器
             const streamWriter = new WebStreamWriter(ws);
-            const toolSpinner = new WebToolSpinner(ws);
+            const toolSpinner = new WebToolSpinner(ws, {
+              onToolStart: () => {
+                turnTools.total += 1;
+              },
+              onToolEnd: (event) => {
+                if (event.status === 'success') {
+                  turnTools.success += 1;
+                } else {
+                  turnTools.error += 1;
+                }
+              },
+            });
 
             try {
               // 执行对话
@@ -817,8 +924,8 @@ export async function startWebServer(port: number = 3000) {
               ws.send(JSON.stringify(errorMsg));
             } finally {
               // 清除活跃的 sessionId
-              const connectionId = (ws.data as any).connectionId;
-              if (connectionId) {
+              const activeConnectionId = (ws.data as any).connectionId;
+              if (activeConnectionId) {
                 clearActiveSessionId();
               }
             }
@@ -827,14 +934,25 @@ export async function startWebServer(port: number = 3000) {
             if (!ws.data.shouldStop) {
               // 结束助手消息
               streamWriter.end();
-
-              // 更新状态
-              const idleMsg: WebSocketMessage = {
-                type: 'status',
-                status: 'idle',
-              };
-              ws.send(JSON.stringify(idleMsg));
             }
+
+            const turnEndedAtMs = Date.now();
+            const turnSummaryMsg: WebSocketMessage = {
+              type: 'turn_summary',
+              startedAt: new Date(turnStartedAtMs).toISOString(),
+              endedAt: new Date(turnEndedAtMs).toISOString(),
+              durationMs: Math.max(0, turnEndedAtMs - turnStartedAtMs),
+              tools: turnTools,
+              stopped: ws.data.shouldStop ? true : undefined,
+            };
+            ws.send(JSON.stringify(turnSummaryMsg));
+
+            // 更新状态
+            const idleMsg: WebSocketMessage = {
+              type: 'status',
+              status: 'idle',
+            };
+            ws.send(JSON.stringify(idleMsg));
           } else if (data.type === 'command') {
             // 处理命令
             const cmd = data.command.toLowerCase();
@@ -853,9 +971,12 @@ export async function startWebServer(port: number = 3000) {
 
                 // 更新 session 池
                 const newSessionId = newAgent.getSessionId();
+                setConfirmationSessionId(newSessionId);
                 sessionPool.set(newSessionId, newAgent);
                 activeSessionIdForPool = newSessionId;
                 ws.data.requestedSessionId = newSessionId;
+                ws.data.llmConfig = newAgent.getConfig().llmConfig;
+                await persistSessionLLMState(newSessionId, ws.data.config, ws.data.llmConfig);
 
                 ws.send(JSON.stringify({
                   type: 'session_bound',
@@ -929,23 +1050,107 @@ export async function startWebServer(port: number = 3000) {
   console.log('Press Ctrl+C to stop');
 }
 
-function resolveProviderId(config: Config): string {
+function clampTemperature(value: number | undefined, fallback: number = 0.3): number {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return Math.min(1, Math.max(0, fallback));
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+function buildSessionLLMConfig(
+  config: Config,
+  currentConfig: Config['llm'],
+  providerId: string,
+  model: string,
+  requestedTemperature?: number
+): Config['llm'] {
   const providers = getAvailableProviders(config);
-  const entries = Object.entries(providers);
-  if (config.llm.provider !== 'openai-compatible') {
-    const match = entries.find(([, provider]) => provider.provider === config.llm.provider);
-    return match ? match[0] : config.llm.provider;
+  const provider = providers[providerId];
+
+  if (!provider) {
+    throw new Error(`Provider "${providerId}" not found`);
   }
 
-  if (config.llm.baseUrl) {
-    const match = entries.find(([, provider]) => provider.baseUrl === config.llm.baseUrl);
+  const apiKey = provider.apiKey || currentConfig.apiKey || config.llm.apiKey;
+  const temperature = clampTemperature(
+    requestedTemperature,
+    currentConfig.temperature ?? config.llm.temperature ?? 0.3
+  );
+
+  return {
+    provider: provider.provider,
+    model,
+    apiKey,
+    baseUrl: provider.baseUrl,
+    headers: provider.headers,
+    api: provider.api,
+    temperature,
+  };
+}
+
+function resolveProviderId(config: Config, llmConfig: Config['llm'] = config.llm): string {
+  const providers = getAvailableProviders(config);
+  const entries = Object.entries(providers);
+
+  if (llmConfig.provider !== 'openai-compatible') {
+    const match = entries.find(([, provider]) => provider.provider === llmConfig.provider);
+    return match ? match[0] : llmConfig.provider;
+  }
+
+  if (llmConfig.baseUrl) {
+    const match = entries.find(([, provider]) => provider.baseUrl === llmConfig.baseUrl);
     if (match) return match[0];
   }
 
   return 'openai';
 }
 
-async function sendProviderConfig(ws: ServerWebSocket<WebSocketData>, providerId: string): Promise<void> {
+async function resolveSessionLLMConfig(
+  config: Config,
+  fallbackConfig: Config['llm'],
+  sessionId: string
+): Promise<Config['llm']> {
+  const persisted = await loadSessionLLMConfig(sessionId);
+  if (!persisted) {
+    return fallbackConfig;
+  }
+
+  try {
+    return buildSessionLLMConfig(
+      config,
+      fallbackConfig,
+      persisted.providerId,
+      persisted.model,
+      persisted.temperature
+    );
+  } catch (error) {
+    console.warn(`[WebSocket] Failed to restore LLM config for session ${sessionId}:`, error);
+    return fallbackConfig;
+  }
+}
+
+async function persistSessionLLMState(
+  sessionId: string,
+  config: Config,
+  llmConfig: Config['llm']
+): Promise<void> {
+  try {
+    const providerId = resolveProviderId(config, llmConfig);
+    await saveSessionLLMConfig(sessionId, {
+      providerId,
+      model: llmConfig.model,
+      temperature: clampTemperature(llmConfig.temperature, config.llm.temperature ?? 0.3),
+    });
+  } catch (error) {
+    console.warn(`[WebSocket] Failed to persist LLM config for session ${sessionId}:`, error);
+  }
+}
+
+async function sendProviderConfig(
+  ws: ServerWebSocket<WebSocketData>,
+  providerId: string,
+  llmConfig: Config['llm'] = ws.data.llmConfig
+): Promise<void> {
   const providers = getAvailableProviders(ws.data.config);
   const providerList = Object.entries(providers).map(([id, provider]) => ({
     id,
@@ -953,14 +1158,14 @@ async function sendProviderConfig(ws: ServerWebSocket<WebSocketData>, providerId
     description: provider.description,
     provider: provider.provider,
   }));
-  const models = await getProviderModels(providerId, ws.data.config);
+  const models = await getProviderModels(providerId, ws.data.config, llmConfig.apiKey);
   const configMsg: WebSocketMessage = {
     type: 'llm_config',
     providerId,
-    model: ws.data.config.llm.model,
+    model: llmConfig.model,
     providers: providerList,
     models,
-    temperature: ws.data.config.llm.temperature,
+    temperature: llmConfig.temperature ?? 0.3,
   };
   ws.send(JSON.stringify(configMsg));
 }

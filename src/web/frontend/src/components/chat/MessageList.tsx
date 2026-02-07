@@ -3,6 +3,7 @@ import { useChatStore } from '@/stores/chat'
 import { UserMessage } from './UserMessage'
 import { AssistantMessage } from './AssistantMessage'
 import { EmptyState } from './EmptyState'
+import { EventMessage } from './EventMessage'
 
 export function MessageList() {
   const messages = useChatStore((state) => state.messages)
@@ -31,6 +32,9 @@ export function MessageList() {
         }
         if (message.role === 'assistant') {
           return <AssistantMessage key={message.id} message={message} />
+        }
+        if (message.role === 'event') {
+          return <EventMessage key={message.id} message={message} />
         }
         if (message.role === 'system') {
           return (

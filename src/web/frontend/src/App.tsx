@@ -10,6 +10,7 @@ import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { AuditDrawer } from '@/components/drawers/AuditDrawer'
 import { ToolsDrawer } from '@/components/drawers/ToolsDrawer'
 import { SettingsDrawer } from '@/components/drawers/SettingsDrawer'
+import { ContextDrawer } from '@/components/drawers/ContextDrawer'
 
 function App() {
   // Initialize WebSocket connection
@@ -50,6 +51,7 @@ function App() {
       {activeDrawer === 'audit' && <AuditDrawer />}
       {activeDrawer === 'tools' && <ToolsDrawer />}
       {activeDrawer === 'settings' && <SettingsDrawer />}
+      {activeDrawer === 'context' && <ContextDrawer />}
 
       {/* Confirm Dialog */}
       <ConfirmDialog />

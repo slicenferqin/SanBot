@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type DrawerType = 'audit' | 'tools' | 'settings' | null
+export type DrawerType = 'audit' | 'tools' | 'settings' | 'context' | null
 
 interface UIState {
   sidebarOpen: boolean

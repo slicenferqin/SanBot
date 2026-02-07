@@ -101,7 +101,7 @@ export class TUIToolSpinner implements ToolSpinnerInterface {
   /**
    * 工具调用成功
    */
-  success(toolName: string): void {
+  success(toolName: string, _meta?: { message?: string; durationMs?: number }): void {
     if (this.currentToolId) {
       const duration = Date.now() - this.startTime;
       this.tui.updateToolCall(this.currentToolId, {
@@ -115,7 +115,7 @@ export class TUIToolSpinner implements ToolSpinnerInterface {
   /**
    * 工具调用失败
    */
-  error(toolName: string, errorMsg?: string): void {
+  error(toolName: string, errorMsg?: string, _meta?: { message?: string; durationMs?: number }): void {
     if (this.currentToolId) {
       const duration = Date.now() - this.startTime;
       this.tui.updateToolCall(this.currentToolId, {

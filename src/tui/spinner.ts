@@ -1,10 +1,15 @@
 import { createSpinner } from 'nanospinner';
 import pc from 'picocolors';
 
+export interface ToolSpinnerEndMeta {
+  message?: string;
+  durationMs?: number;
+}
+
 export interface ToolSpinnerInterface {
   start(toolName: string, input: any): void;
-  success(toolName: string): void;
-  error(toolName: string, errorMsg?: string): void;
+  success(toolName: string, meta?: ToolSpinnerEndMeta): void;
+  error(toolName: string, errorMsg?: string, meta?: ToolSpinnerEndMeta): void;
   stop(): void;
 }
 
@@ -46,7 +51,7 @@ export class ToolSpinner implements ToolSpinnerInterface {
   /**
    * 工具调用成功
    */
-  success(toolName: string): void {
+  success(toolName: string, _meta?: ToolSpinnerEndMeta): void {
     const duration = this.getDuration();
     
     if (!this.isTTY) {
@@ -65,7 +70,7 @@ export class ToolSpinner implements ToolSpinnerInterface {
   /**
    * 工具调用失败
    */
-  error(toolName: string, errorMsg?: string): void {
+  error(toolName: string, errorMsg?: string, _meta?: ToolSpinnerEndMeta): void {
     const duration = this.getDuration();
     
     if (!this.isTTY) {
