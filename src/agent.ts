@@ -13,7 +13,6 @@ import {
   type ConversationRecord,
 } from './memory/index.ts';
 import { loadSoul } from './birth/index.ts';
-import { setSessionId } from './utils/confirmation.ts';
 import { ToolSpinner, StreamWriter } from './tui/index.ts';
 import type { ToolSpinnerInterface, StreamWriterInterface } from './tui/index.ts';
 import {
@@ -77,8 +76,6 @@ export class Agent {
     this.config = config;
     this.sessionId =
       config.sessionId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    // 设置全局会话 ID（用于审计日志）
-    setSessionId(this.sessionId);
     // 先用同步版本，init 时会替换
     this.toolRegistry = createToolRegistry();
     // 初始化上下文压缩器

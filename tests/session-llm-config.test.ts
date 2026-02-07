@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdir, rm, writeFile } from 'fs/promises';
+import { mkdir, readdir, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -45,6 +45,28 @@ describe('session llm config storage', () => {
     expect(loaded?.providerId).toBe('laogan');
     expect(loaded?.model).toBe('claude-opus-4-6');
     expect(loaded?.temperature).toBeCloseTo(0.66, 5);
+  });
+
+
+  test('saveSessionLLMConfig uses atomic write without leaving temp files', async () => {
+    const storage = await import(`../src/memory/storage.ts?test=${Date.now()}-llm-atomic`);
+
+    await storage.saveSessionLLMConfig('session-atomic', {
+      providerId: 'openai',
+      model: 'gpt-5.2',
+      temperature: 0.4,
+    });
+
+    await storage.saveSessionLLMConfig('session-atomic', {
+      providerId: 'openai',
+      model: 'gpt-5.3',
+      temperature: 0.2,
+    });
+
+    const files = await readdir(storage.SESSION_CONFIG_DIR);
+    const tempFiles = files.filter((file: string) => file.includes('.tmp'));
+
+    expect(tempFiles.length).toBe(0);
   });
 
   test('loadSessionLLMConfig handles invalid payload and clamps temperature', async () => {

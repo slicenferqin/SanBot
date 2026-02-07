@@ -3,7 +3,7 @@
  */
 
 import { existsSync } from 'fs';
-import { mkdir, appendFile, readFile, readdir, writeFile } from 'fs/promises';
+import { mkdir, appendFile, readFile, readdir, rename, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 import type { ConversationRecord, ToolCallRecord } from './types.ts';
@@ -120,6 +120,18 @@ function normalizeTemperature(temperature: number | undefined): number {
     return 0.3;
   }
   return Math.min(1, Math.max(0, temperature));
+}
+
+async function writeFileAtomic(filePath: string, content: string): Promise<void> {
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  await writeFile(tempPath, content, 'utf-8');
+
+  try {
+    await rename(tempPath, filePath);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 /**
@@ -329,7 +341,7 @@ export async function saveSessionLLMConfig(
   };
 
   const filePath = join(SESSION_CONFIG_DIR, `${normalizedSessionId}.json`);
-  await writeFile(filePath, JSON.stringify(record, null, 2), 'utf-8');
+  await writeFileAtomic(filePath, JSON.stringify(record, null, 2));
 
   return record;
 }

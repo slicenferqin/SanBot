@@ -3,7 +3,7 @@
  * 在执行危险命令前询问用户确认
  */
 
-import type { ServerWebSocket } from 'bun';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   analyzeDanger,
   requiresConfirmation,
@@ -13,21 +13,50 @@ import {
 } from './danger-detector.ts';
 import { logApproved, logRejected, logAutoBlocked } from './audit-log.ts';
 
-// 全局会话 ID（由 Agent 设置）
-let currentSessionId = 'unknown';
+export interface ConfirmationContext {
+  sessionId?: string;
+  connectionId?: string;
+  source?: 'web' | 'cli' | 'tui' | 'unknown';
+}
+
+const confirmationContextStorage = new AsyncLocalStorage<ConfirmationContext>();
+
+// 默认会话 ID（用于没有显式上下文的兼容场景）
+let defaultSessionId = 'unknown';
 
 /**
- * 设置当前会话 ID
+ * 在当前异步上下文内绑定确认上下文
+ */
+export function runWithConfirmationContext<T>(
+  context: ConfirmationContext,
+  fn: () => Promise<T> | T,
+): Promise<T> | T {
+  return confirmationContextStorage.run(context, fn);
+}
+
+/**
+ * 获取当前确认上下文
+ */
+export function getConfirmationContext(): ConfirmationContext | undefined {
+  return confirmationContextStorage.getStore();
+}
+
+/**
+ * 设置默认会话 ID（兼容旧调用链）
  */
 export function setSessionId(sessionId: string): void {
-  currentSessionId = sessionId;
+  const trimmed = sessionId?.trim();
+  if (!trimmed) {
+    return;
+  }
+  defaultSessionId = trimmed;
 }
 
 /**
  * 获取当前会话 ID
  */
 export function getSessionId(): string {
-  return currentSessionId;
+  return resolveSessionIdForAudit();
 }
 
 // 是否启用交互式确认（非交互模式下自动拒绝危险操作）
@@ -66,39 +95,58 @@ export function isTuiMode(): boolean {
   return tuiMode;
 }
 
-// WebSocket 确认回调 - Map<sessionId, callback>
+// WebSocket 确认回调 - Map<connectionId, callback>
 const webSocketConfirmCallbacks = new Map<string, (command: string, analysis: DangerAnalysis) => Promise<boolean>>();
-
-// 当前活跃的 sessionId（用于路由确认请求）
-let activeSessionId: string | null = null;
 
 /**
  * 设置 WebSocket 确认回调
  * 用于 WebUI 模式下通过 WebSocket 请求用户确认
  */
-export function setWebSocketConfirmCallback(sessionId: string, callback: (command: string, analysis: DangerAnalysis) => Promise<boolean>): void {
-  webSocketConfirmCallbacks.set(sessionId, callback);
+export function setWebSocketConfirmCallback(connectionId: string, callback: (command: string, analysis: DangerAnalysis) => Promise<boolean>): void {
+  webSocketConfirmCallbacks.set(connectionId, callback);
 }
 
 /**
  * 移除 WebSocket 确认回调
  */
-export function removeWebSocketConfirmCallback(sessionId: string): void {
-  webSocketConfirmCallbacks.delete(sessionId);
+export function removeWebSocketConfirmCallback(connectionId: string): void {
+  webSocketConfirmCallbacks.delete(connectionId);
 }
 
-/**
- * 设置当前活跃的 sessionId
- */
-export function setActiveSessionId(sessionId: string): void {
-  activeSessionId = sessionId;
+function resolveSessionIdForAudit(): string {
+  const contextSessionId = confirmationContextStorage.getStore()?.sessionId?.trim();
+  if (contextSessionId) {
+    return contextSessionId;
+  }
+  return defaultSessionId;
 }
 
-/**
- * 清除当前活跃的 sessionId
- */
-export function clearActiveSessionId(): void {
-  activeSessionId = null;
+function resolveWebSocketCallback(): {
+  callbackId: string;
+  callback: (command: string, analysis: DangerAnalysis) => Promise<boolean>;
+} | null {
+  const context = confirmationContextStorage.getStore();
+
+  const callbackId = context?.connectionId?.trim();
+  if (callbackId) {
+    const callback = webSocketConfirmCallbacks.get(callbackId);
+    if (callback) {
+      return { callbackId, callback };
+    }
+  }
+
+  const sessionFallbackId = context?.sessionId?.trim();
+  if (sessionFallbackId) {
+    const callback = webSocketConfirmCallbacks.get(sessionFallbackId);
+    if (callback) {
+      return {
+        callbackId: sessionFallbackId,
+        callback,
+      };
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -190,6 +238,7 @@ async function askUserConfirmation(command: string, analysis: DangerAnalysis): P
  */
 export async function checkAndConfirm(command: string): Promise<ConfirmationResult> {
   const analysis = analyzeDanger(command);
+  const sessionIdForAudit = resolveSessionIdForAudit();
 
   // 安全命令直接通过
   if (!requiresConfirmation(analysis)) {
@@ -204,7 +253,7 @@ export async function checkAndConfirm(command: string): Promise<ConfirmationResu
     console.log(formatDangerAnalysis(command, analysis));
     console.log('\x1b[33m[非交互模式] 危险操作已自动跳过\x1b[0m\n');
 
-    await logAutoBlocked(currentSessionId, command, analysis.level, analysis.reasons);
+    await logAutoBlocked(sessionIdForAudit, command, analysis.level, analysis.reasons);
     return { approved: false, analysis };
   }
 
@@ -215,28 +264,25 @@ export async function checkAndConfirm(command: string): Promise<ConfirmationResu
     console.log('\x1b[33m[TUI 模式] 危险操作已自动批准（stdin 被 TUI 占用）\x1b[0m\n');
 
     // 仍然记录到审计日志
-    await logApproved(currentSessionId, command, analysis.level, analysis.reasons, { success: true });
+    await logApproved(sessionIdForAudit, command, analysis.level, analysis.reasons, { success: true });
     return { approved: true, analysis };
   }
 
-  // WebSocket 模式下，通过 WebSocket 请求确认
-  // 使用当前活跃的 sessionId 查找对应的回调
-  if (activeSessionId) {
-    const callback = webSocketConfirmCallbacks.get(activeSessionId);
-    if (callback) {
-      console.log(`[WebSocket] Requesting user confirmation for session ${activeSessionId}...`);
-      const approved = await callback(command, analysis);
+  // WebSocket 模式下，通过上下文 connectionId 路由确认回调
+  const wsCallback = resolveWebSocketCallback();
+  if (wsCallback) {
+    console.log(`[WebSocket] Requesting user confirmation via ${wsCallback.callbackId}...`);
+    const approved = await wsCallback.callback(command, analysis);
 
-      if (approved) {
-        console.log('\x1b[32m✓ User confirmed via WebSocket\x1b[0m\n');
-        await logApproved(currentSessionId, command, analysis.level, analysis.reasons, { success: true });
-      } else {
-        console.log('\x1b[31m✗ User rejected via WebSocket\x1b[0m\n');
-        await logRejected(currentSessionId, command, analysis.level, analysis.reasons);
-      }
-
-      return { approved, analysis };
+    if (approved) {
+      console.log('\x1b[32m✓ User confirmed via WebSocket\x1b[0m\n');
+      await logApproved(sessionIdForAudit, command, analysis.level, analysis.reasons, { success: true });
+    } else {
+      console.log('\x1b[31m✗ User rejected via WebSocket\x1b[0m\n');
+      await logRejected(sessionIdForAudit, command, analysis.level, analysis.reasons);
     }
+
+    return { approved, analysis };
   }
 
   // 交互模式下请求用户确认（终端）
@@ -246,7 +292,7 @@ export async function checkAndConfirm(command: string): Promise<ConfirmationResu
     console.log('\x1b[32m✓ 用户已确认，继续执行\x1b[0m\n');
   } else {
     console.log('\x1b[31m✗ 用户已取消操作\x1b[0m\n');
-    await logRejected(currentSessionId, command, analysis.level, analysis.reasons);
+    await logRejected(sessionIdForAudit, command, analysis.level, analysis.reasons);
   }
 
   return { approved, analysis };
@@ -258,10 +304,12 @@ export async function checkAndConfirm(command: string): Promise<ConfirmationResu
 export async function logExecutionResult(
   command: string,
   analysis: DangerAnalysis,
-  result: { success: boolean; exitCode?: number; error?: string }
+  result: { success: boolean; exitCode?: number; error?: string },
+  sessionId?: string,
 ): Promise<void> {
   if (requiresConfirmation(analysis)) {
-    await logApproved(currentSessionId, command, analysis.level, analysis.reasons, result);
+    const sessionIdForAudit = sessionId?.trim() || resolveSessionIdForAudit();
+    await logApproved(sessionIdForAudit, command, analysis.level, analysis.reasons, result);
   }
 }
 

@@ -7,7 +7,7 @@ import type { ServerWebSocket } from 'bun';
 import { Agent } from '../agent.ts';
 import { getAvailableProviders, getProviderModels, loadConfig } from '../config/loader.ts';
 import type { Config } from '../config/types.ts';
-import { setInteractiveMode, setTuiMode, setWebSocketConfirmCallback, removeWebSocketConfirmCallback, setActiveSessionId, clearActiveSessionId, setSessionId as setConfirmationSessionId, type DangerAnalysis } from '../utils/confirmation.ts';
+import { runWithConfirmationContext, setInteractiveMode, setTuiMode, setWebSocketConfirmCallback, removeWebSocketConfirmCallback, type DangerAnalysis } from '../utils/confirmation.ts';
 import { getAuditStats, getTodayAuditLogs, type AuditEntry } from '../utils/audit-log.ts';
 import { loadToolRegistry, getToolLogs, getToolMeta, createDynamicToolDef } from '../tools/tool-registry-center.ts';
 import { getSessionContext, formatMemoryContext } from '../memory/retrieval.ts';
@@ -19,6 +19,7 @@ import {
 } from '../memory/storage.ts';
 import { runToolTool } from '../tools/self-tool.ts';
 import { WebStreamWriter, WebToolSpinner, type WebSocketMessage } from './adapters.ts';
+import { SessionPool } from './session-pool.ts';
 import { join } from 'path';
 import { getRecentContextEvents } from '../context/tracker.ts';
 
@@ -57,6 +58,8 @@ interface WebSocketData {
   agent?: Agent;  // 延迟初始化
   shouldStop?: boolean;  // 停止标志
   currentMessageId?: string;  // 当前消息ID
+  connectionId: string | null;
+  boundSessionId: string | null;
 }
 
 interface SessionBindResult {
@@ -74,12 +77,36 @@ function createConnectionData(config: Config, requestedSessionId: string | null 
     pendingConfirmations: new Map<string, (confirmed: boolean) => void>(),
     confirmationQueue: [],
     isProcessingConfirmation: false,
+    connectionId: null,
+    boundSessionId: null,
   };
 }
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 const SESSION_HISTORY_LOAD_LIMIT = 200;
 const SESSION_HISTORY_RESTORE_TURNS = 30;
+const SESSION_POOL_MAX_SIZE = parsePositiveIntEnv('SANBOT_SESSION_POOL_MAX', 50, 5, 500);
+const SESSION_POOL_IDLE_TTL_MS = parsePositiveIntEnv('SANBOT_SESSION_IDLE_TTL_MS', 30 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000);
+const SESSION_POOL_SWEEP_INTERVAL_MS = parsePositiveIntEnv('SANBOT_SESSION_SWEEP_INTERVAL_MS', 60 * 1000, 10 * 1000, 60 * 60 * 1000);
+
+function parsePositiveIntEnv(
+  key: string,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const raw = process.env[key];
+  if (!raw) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, parsed));
+}
 
 function parseCookies(cookieHeader: string | null): Record<string, string> {
   if (!cookieHeader) return {};
@@ -194,10 +221,32 @@ export async function startWebServer(port: number = 3000) {
   setTuiMode(false); // WebUI 不是 TUI 模式
 
   // Session 池 - 保持 Agent 实例在 WebSocket 断开后存活
-  // key: sessionId, value: Agent 实例
-  const sessionPool = new Map<string, Agent>();
-  // 当前活跃的 sessionId（单用户场景，只有一个活跃 session）
-  let activeSessionIdForPool: string | null = null;
+  const sessionPool = new SessionPool<Agent>({
+    maxSize: SESSION_POOL_MAX_SIZE,
+    idleTtlMs: SESSION_POOL_IDLE_TTL_MS,
+  });
+
+  const activeConnectionSessions = new Map<string, string>();
+  const serverStartedAtMs = Date.now();
+
+  const getActiveSessionIds = (): Set<string> => new Set(activeConnectionSessions.values());
+
+  const sweepSessionPool = (reason: string) => {
+    const { expired, overflow } = sessionPool.sweep(getActiveSessionIds());
+
+    if (expired.length > 0) {
+      console.log(`[SessionPool] Expired (${reason}): ${expired.join(', ')}`);
+    }
+
+    if (overflow.length > 0) {
+      console.log(`[SessionPool] Overflow eviction (${reason}): ${overflow.join(', ')}`);
+    }
+  };
+
+  const sessionSweepTimer = setInterval(() => {
+    sweepSessionPool('interval');
+  }, SESSION_POOL_SWEEP_INTERVAL_MS);
+  sessionSweepTimer.unref?.();
 
   // 静态文件目录 - 优先使用 frontend/dist，回退到 static
   const frontendDistDir = join(import.meta.dir, 'frontend', 'dist');
@@ -209,6 +258,7 @@ export async function startWebServer(port: number = 3000) {
   const distDir = useFrontendDist ? frontendDistDir : staticDir;
 
   console.log(`📁 Serving static files from: ${distDir}`);
+  console.log(`[SessionPool] max=${SESSION_POOL_MAX_SIZE} idleTTL=${SESSION_POOL_IDLE_TTL_MS}ms sweep=${SESSION_POOL_SWEEP_INTERVAL_MS}ms`);
 
   // 创建服务器
   const server = Bun.serve<WebSocketData>({
@@ -461,6 +511,28 @@ export async function startWebServer(port: number = 3000) {
         }
       }
 
+      if (url.pathname === '/api/health') {
+        sweepSessionPool('health-check');
+
+        const stats = sessionPool.stats();
+        const activeSessionIds = getActiveSessionIds();
+
+        return Response.json({
+          status: 'ok',
+          timestamp: new Date().toISOString(),
+          uptimeMs: Math.max(0, Date.now() - serverStartedAtMs),
+          websocket: {
+            connections: activeConnectionSessions.size,
+            activeSessions: activeSessionIds.size,
+          },
+          sessionPool: {
+            ...stats,
+            sweepIntervalMs: SESSION_POOL_SWEEP_INTERVAL_MS,
+            topSessions: sessionPool.snapshot(10),
+          },
+        });
+      }
+
       if (url.pathname === '/api/context') {
         const sessionId = normalizeSessionId(url.searchParams.get('sessionId'));
 
@@ -556,6 +628,33 @@ export async function startWebServer(port: number = 3000) {
       open(ws: ServerWebSocket<WebSocketData>) {
         console.log('✅ Client connected');
 
+        // 设置 WebSocket 确认回调（每个连接独立，使用队列）
+        const connectionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        ws.data.connectionId = connectionId;
+
+        setWebSocketConfirmCallback(connectionId, async (command: string, analysis: DangerAnalysis) => {
+          console.log(`[WebSocket][${connectionId}] Queueing confirmation request`);
+          console.log(`[WebSocket][${connectionId}] Command:`, command);
+          console.log(`[WebSocket][${connectionId}] Level:`, analysis.level);
+          console.log(`[WebSocket][${connectionId}] Current queue size: ${ws.data.confirmationQueue.length}`);
+
+          return await new Promise((resolve) => {
+            // 将确认请求加入队列
+            ws.data.confirmationQueue.push({
+              command,
+              analysis,
+              resolve,
+            });
+
+            console.log(`[WebSocket][${connectionId}] Added to queue. New size: ${ws.data.confirmationQueue.length}`);
+
+            // 如果这是队列中唯一的请求，立即处理
+            if (ws.data.confirmationQueue.length === 1) {
+              processNextConfirmation(ws);
+            }
+          });
+        });
+
         const initAgent = async () => {
           let sessionBindResult: SessionBindResult | null = null;
           let preloadedSessionConversations: Awaited<ReturnType<typeof loadSessionConversations>> | null = null;
@@ -615,17 +714,16 @@ export async function startWebServer(port: number = 3000) {
             }
           }
 
-          // 回退：复用当前活跃 session（兼容旧行为）
+          // 回退：复用最近活跃的 session
           if (!sessionBindResult && !requestedSessionId) {
-            const fallbackAgent = activeSessionIdForPool ? sessionPool.get(activeSessionIdForPool) : null;
-            if (fallbackAgent) {
-              const fallbackSessionId = fallbackAgent.getSessionId();
+            const fallbackSession = sessionPool.getMostRecent();
+            if (fallbackSession) {
               sessionBindResult = {
-                agent: fallbackAgent,
-                sessionId: fallbackSessionId,
+                agent: fallbackSession.value,
+                sessionId: fallbackSession.sessionId,
                 createdNew: false,
               };
-              console.log(`[WebSocket] Reusing active session: ${fallbackSessionId}`);
+              console.log(`[WebSocket] Reusing recent session: ${fallbackSession.sessionId}`);
             }
           }
 
@@ -647,12 +745,17 @@ export async function startWebServer(port: number = 3000) {
 
           const { agent, sessionId, createdNew } = sessionBindResult;
           ws.data.agent = agent;
-          setConfirmationSessionId(sessionId);
           ws.data.requestedSessionId = sessionId;
+          ws.data.boundSessionId = sessionId;
           ws.data.llmConfig = agent.getConfig().llmConfig;
+
+          if (ws.data.connectionId) {
+            activeConnectionSessions.set(ws.data.connectionId, sessionId);
+          }
+
           await persistSessionLLMState(sessionId, ws.data.config, ws.data.llmConfig);
           sessionPool.set(sessionId, agent);
-          activeSessionIdForPool = sessionId;
+          sweepSessionPool('bind');
 
           try {
             const providerId = resolveProviderId(ws.data.config, ws.data.llmConfig);
@@ -714,34 +817,6 @@ export async function startWebServer(port: number = 3000) {
         initAgent().catch((error) => {
           console.error('Error initializing agent:', error);
         });
-
-        // 设置 WebSocket 确认回调（每个连接独立，使用队列）
-        const connectionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        setWebSocketConfirmCallback(connectionId, async (command: string, analysis: DangerAnalysis) => {
-          console.log(`[WebSocket][${connectionId}] Queueing confirmation request`);
-          console.log(`[WebSocket][${connectionId}] Command:`, command);
-          console.log(`[WebSocket][${connectionId}] Level:`, analysis.level);
-          console.log(`[WebSocket][${connectionId}] Current queue size: ${ws.data.confirmationQueue.length}`);
-
-          return await new Promise((resolve) => {
-            // 将确认请求加入队列
-            ws.data.confirmationQueue.push({
-              command,
-              analysis,
-              resolve,
-            });
-
-            console.log(`[WebSocket][${connectionId}] Added to queue. New size: ${ws.data.confirmationQueue.length}`);
-
-            // 如果这是队列中唯一的请求，立即处理
-            if (ws.data.confirmationQueue.length === 1) {
-              processNextConfirmation(ws);
-            }
-          });
-        });
-
-        // 存储连接 ID 到 ws.data
-        (ws.data as any).connectionId = connectionId;
 
         // 发送欢迎消息
         const welcomeMsg: WebSocketMessage = {
@@ -876,14 +951,14 @@ export async function startWebServer(port: number = 3000) {
             // 重置停止标志
             ws.data.shouldStop = false;
 
-            // 设置当前活跃的 sessionId（用于确认回调路由）
-            const connectionId = (ws.data as any).connectionId;
-            if (connectionId) {
-              setActiveSessionId(connectionId);
-            }
-
             const sessionId = agent.getSessionId();
-            setConfirmationSessionId(sessionId);
+            ws.data.boundSessionId = sessionId;
+            if (!sessionPool.touch(sessionId)) {
+              sessionPool.set(sessionId, agent);
+            }
+            if (ws.data.connectionId) {
+              activeConnectionSessions.set(ws.data.connectionId, sessionId);
+            }
 
             // 回显用户消息
             const userMsg: WebSocketMessage = {
@@ -928,7 +1003,13 @@ export async function startWebServer(port: number = 3000) {
 
             try {
               // 执行对话
-              await agent.chatStream(data.content, streamWriter, toolSpinner);
+              await runWithConfirmationContext({
+                sessionId,
+                connectionId: ws.data.connectionId || undefined,
+                source: 'web',
+              }, async () => {
+                await agent.chatStream(data.content, streamWriter, toolSpinner);
+              });
             } catch (chatError: any) {
               console.error('❌ Chat stream error:', chatError);
               const errorMsg: WebSocketMessage = {
@@ -936,12 +1017,6 @@ export async function startWebServer(port: number = 3000) {
                 message: `Chat error: ${chatError.message || 'Unknown error'}`,
               };
               ws.send(JSON.stringify(errorMsg));
-            } finally {
-              // 清除活跃的 sessionId
-              const activeConnectionId = (ws.data as any).connectionId;
-              if (activeConnectionId) {
-                clearActiveSessionId();
-              }
             }
 
             // 如果被停止，不再发送结束消息
@@ -985,12 +1060,15 @@ export async function startWebServer(port: number = 3000) {
 
                 // 更新 session 池
                 const newSessionId = newAgent.getSessionId();
-                setConfirmationSessionId(newSessionId);
                 sessionPool.set(newSessionId, newAgent);
-                activeSessionIdForPool = newSessionId;
                 ws.data.requestedSessionId = newSessionId;
+                ws.data.boundSessionId = newSessionId;
                 ws.data.llmConfig = newAgent.getConfig().llmConfig;
+                if (ws.data.connectionId) {
+                  activeConnectionSessions.set(ws.data.connectionId, newSessionId);
+                }
                 await persistSessionLLMState(newSessionId, ws.data.config, ws.data.llmConfig);
+                sweepSessionPool('new-command');
 
                 ws.send(JSON.stringify({
                   type: 'session_bound',
@@ -1049,11 +1127,14 @@ export async function startWebServer(port: number = 3000) {
       close(ws: ServerWebSocket<WebSocketData>) {
         console.log('❌ Client disconnected');
         // 移除 WebSocket 确认回调
-        const connectionId = (ws.data as any).connectionId;
+        const connectionId = ws.data.connectionId;
         if (connectionId) {
           removeWebSocketConfirmCallback(connectionId);
+          activeConnectionSessions.delete(connectionId);
           console.log(`[WebSocket] Removed confirmation callback for ${connectionId}`);
         }
+
+        sweepSessionPool('disconnect');
       },
     },
   });

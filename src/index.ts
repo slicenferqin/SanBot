@@ -5,7 +5,7 @@ import { Agent } from './agent.ts';
 import { loadConfig, initConfig, saveConfig, getAvailableProviders, getProvider, updateActiveProvider, addCustomProvider, getProviderModels } from './config/loader.ts';
 import { MemoryConsolidator } from './memory/index.ts';
 import { birthCeremony, hasSoul } from './birth/index.ts';
-import { setInteractiveMode, setTuiMode } from './utils/confirmation.ts';
+import { runWithConfirmationContext, setInteractiveMode, setTuiMode } from './utils/confirmation.ts';
 import { getTodayAuditLogs, getAuditStats } from './utils/audit-log.ts';
 import { SanBotPiTUI, TUIStreamWriter, TUIToolSpinner } from './tui-pi/index.ts';
 import { startWebServer } from './web/index.ts';
@@ -276,7 +276,12 @@ async function singleExecution(config: any, message: string) {
     await agent.init();
 
     // 使用流式输出
-    await agent.chatStream(message);
+    await runWithConfirmationContext({
+      sessionId: agent.getSessionId(),
+      source: 'cli',
+    }, async () => {
+      await agent.chatStream(message);
+    });
     console.log('\n✅ Done!');
   } catch (error: any) {
     console.error('\n❌ Error:', JSON.stringify(error, null, 2));
@@ -371,7 +376,12 @@ async function interactiveMode(config: any) {
       tui.setStatus('thinking');
 
       // 使用流式输出（传入 TUI 适配器）
-      await agent.chatStream(input, streamWriter, toolSpinner);
+      await runWithConfirmationContext({
+        sessionId: agent.getSessionId(),
+        source: 'tui',
+      }, async () => {
+        await agent.chatStream(input, streamWriter, toolSpinner);
+      });
 
       // 结束流式输出
       tui.endAssistantMessage();

@@ -2,6 +2,40 @@
 
 ## HTTP API
 
+### `GET /api/health`
+
+服务健康与会话池观测接口（用于发布后巡检/排障）。
+
+- Response 关键字段
+  - `status`: 固定为 `ok`
+  - `uptimeMs`: 服务运行时长
+  - `websocket.connections`: 当前 WebSocket 连接数
+  - `websocket.activeSessions`: 当前有连接绑定的会话数
+  - `sessionPool`: 会话池统计（`size/maxSize/idleTtlMs/sweepIntervalMs/topSessions`）
+
+```json
+{
+  "status": "ok",
+  "timestamp": "2026-02-07T09:00:00.000Z",
+  "uptimeMs": 182345,
+  "websocket": {
+    "connections": 2,
+    "activeSessions": 2
+  },
+  "sessionPool": {
+    "size": 5,
+    "maxSize": 50,
+    "idleTtlMs": 1800000,
+    "oldestIdleMs": 120233,
+    "newestIdleMs": 3221,
+    "sweepIntervalMs": 60000,
+    "topSessions": []
+  }
+}
+```
+
+---
+
 ### `GET /api/context`
 
 查询上下文注入与会话摘要，支持 session 维度过滤。
@@ -117,3 +151,4 @@
   - `llm_update` 成功后
   - `/new` 新会话创建后
 - 服务端重启后，session 重新绑定时会优先恢复该 session 的持久化模型
+- 危险命令确认路由采用异步上下文：`sessionId + connectionId`，不再依赖全局活跃 session
