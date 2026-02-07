@@ -14,6 +14,7 @@ export type ServerMessage =
   | { type: 'tool_end'; name: string; success: boolean; result?: string; error?: string }
   | { type: 'confirm_request'; id: string; command: string; level: string; reasons: string[] }
   | { type: 'chat_history'; messages: HistoryMessage[] }
+  | { type: 'session_bound'; sessionId: string }
   | { type: 'llm_config'; providerId: string; model: string; providers: ProviderInfo[]; models: string[]; temperature: number }
   | { type: 'llm_models'; providerId: string; models: string[] }
   | { type: 'llm_update_result'; success: boolean; providerId?: string; model?: string; temperature?: number; error?: string }

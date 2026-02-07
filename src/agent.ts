@@ -10,6 +10,7 @@ import {
   appendSessionSummary,
   appendExtractedMemory,
   type ToolCallRecord,
+  type ConversationRecord,
 } from './memory/index.ts';
 import { loadSoul } from './birth/index.ts';
 import { setSessionId } from './utils/confirmation.ts';
@@ -188,6 +189,42 @@ export class Agent {
   clearHistory(): void {
     this.conversationHistory = [];
     this.openaiHistory = [];
+  }
+
+  /**
+   * 从持久化记录恢复会话历史（用于服务重启后的上下文延续）
+   */
+  hydrateConversationHistory(records: ConversationRecord[], maxTurns: number = 30): void {
+    const safeMaxTurns = Number.isFinite(maxTurns) && maxTurns > 0
+      ? Math.min(Math.floor(maxTurns), 100)
+      : 30;
+
+    const trimmedRecords = records
+      .filter((record) => Boolean(record?.userMessage || record?.assistantResponse))
+      .slice(-safeMaxTurns);
+
+    const anthropicHistory: Anthropic.MessageParam[] = [];
+    const openaiHistory: ModelMessage[] = [];
+
+    for (const record of trimmedRecords) {
+      const userMessage = record.userMessage?.trim();
+      const assistantResponse = record.assistantResponse?.trim();
+
+      if (userMessage) {
+        anthropicHistory.push({ role: 'user', content: userMessage });
+        openaiHistory.push({ role: 'user', content: userMessage });
+      }
+
+      if (assistantResponse) {
+        anthropicHistory.push({ role: 'assistant', content: assistantResponse });
+        openaiHistory.push({ role: 'assistant', content: assistantResponse });
+      }
+    }
+
+    this.conversationHistory = anthropicHistory;
+    this.openaiHistory = openaiHistory;
+
+    console.log(pc.gray(`[Agent] Restored ${trimmedRecords.length} turns for session ${this.sessionId}`));
   }
 
   /**

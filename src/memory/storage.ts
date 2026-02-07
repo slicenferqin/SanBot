@@ -17,6 +17,11 @@ export const EXTRACTED_DIR = join(MEMORY_DIR, 'extracted');
 export const SUMMARY_DIR = join(MEMORY_DIR, 'summary');
 export const SESSION_SUMMARY_DIR = join(MEMORY_DIR, 'session-summaries');
 
+export interface LoadSessionConversationsOptions {
+  scope?: 'today' | 'all';
+  limit?: number;
+}
+
 /**
  * 确保目录存在
  */
@@ -108,11 +113,40 @@ export async function loadTodayConversations(): Promise<ConversationRecord[]> {
 }
 
 /**
- * 按 sessionId 读取今天的对话记录
+ * 按 sessionId 读取对话记录（默认仅今天，可扩展到全量）
  */
-export async function loadSessionConversations(sessionId: string): Promise<ConversationRecord[]> {
-  const all = await loadTodayConversations();
-  return all.filter((c) => c.sessionId === sessionId);
+export async function loadSessionConversations(
+  sessionId: string,
+  options: LoadSessionConversationsOptions = {}
+): Promise<ConversationRecord[]> {
+  const scope = options.scope ?? 'today';
+  const limit = Number.isFinite(options.limit) && (options.limit ?? 0) > 0
+    ? Math.floor(options.limit as number)
+    : null;
+
+  if (scope === 'today') {
+    const all = await loadTodayConversations();
+    const filtered = all.filter((c) => c.sessionId === sessionId);
+    return limit ? filtered.slice(-limit) : filtered;
+  }
+
+  const dates = (await listDailyDates()).slice().sort().reverse();
+  const collected: ConversationRecord[] = [];
+
+  for (const date of dates) {
+    const dayRecords = await loadDailyConversations(date);
+    for (let i = dayRecords.length - 1; i >= 0; i--) {
+      const record = dayRecords[i];
+      if (record?.sessionId === sessionId) {
+        collected.push(record);
+        if (limit && collected.length >= limit) {
+          return collected.reverse();
+        }
+      }
+    }
+  }
+
+  return collected.reverse();
 }
 
 export async function appendSessionSummary(sessionId: string, summary: string): Promise<void> {

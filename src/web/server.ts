@@ -45,6 +45,7 @@ interface WebSocketData {
   config: Config;
   llmConfig: Config['llm'];
   maxSteps: number;
+  requestedSessionId: string | null;
   pendingConfirmations: Map<string, (confirmed: boolean) => void>;
   confirmationQueue: ConfirmationQueueItem[];
   isProcessingConfirmation: boolean;
@@ -53,15 +54,64 @@ interface WebSocketData {
   currentMessageId?: string;  // 当前消息ID
 }
 
-function createConnectionData(config: Config): WebSocketData {
+interface SessionBindResult {
+  agent: Agent;
+  sessionId: string;
+  createdNew: boolean;
+}
+
+function createConnectionData(config: Config, requestedSessionId: string | null = null): WebSocketData {
   return {
     config,
     llmConfig: config.llm,
     maxSteps: 999,
+    requestedSessionId,
     pendingConfirmations: new Map<string, (confirmed: boolean) => void>(),
     confirmationQueue: [],
     isProcessingConfirmation: false,
   };
+}
+
+const SESSION_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+const SESSION_HISTORY_LOAD_LIMIT = 200;
+const SESSION_HISTORY_RESTORE_TURNS = 30;
+
+function parseCookies(cookieHeader: string | null): Record<string, string> {
+  if (!cookieHeader) return {};
+  const parsed: Record<string, string> = {};
+  const parts = cookieHeader.split(';');
+  for (const part of parts) {
+    const [rawKey, ...rawValue] = part.split('=');
+    const key = rawKey?.trim();
+    if (!key) continue;
+    const encodedValue = rawValue.join('=').trim();
+    try {
+      parsed[key] = decodeURIComponent(encodedValue);
+    } catch {
+      parsed[key] = encodedValue;
+    }
+  }
+  return parsed;
+}
+
+function normalizeSessionId(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!SESSION_ID_PATTERN.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
+function resolveRequestedSessionId(req: Request): string | null {
+  const url = new URL(req.url);
+  const querySessionId = normalizeSessionId(url.searchParams.get('sessionId'));
+  if (querySessionId) {
+    return querySessionId;
+  }
+  const cookies = parseCookies(req.headers.get('cookie'));
+  return normalizeSessionId(cookies.sanbot_session);
 }
 
 const AUDIT_LEVELS = new Set(['safe', 'warning', 'danger', 'critical']);
@@ -162,10 +212,11 @@ export async function startWebServer(port: number = 3000) {
       const url = new URL(req.url);
 
       // WebSocket 升级
-        if (url.pathname === '/ws') {
-          const upgraded = server.upgrade(req, {
-            data: createConnectionData(config),
-          });
+      if (url.pathname === '/ws') {
+        const requestedSessionId = resolveRequestedSessionId(req);
+        const upgraded = server.upgrade(req, {
+          data: createConnectionData(config, requestedSessionId),
+        });
 
         if (upgraded) {
           return undefined;
@@ -442,36 +493,100 @@ export async function startWebServer(port: number = 3000) {
           console.warn('[WebSocket] Failed to send provider config:', error);
         });
 
-        // 尝试复用 session 池中的 Agent，否则创建新的
-        const existingAgent = activeSessionIdForPool ? sessionPool.get(activeSessionIdForPool) : null;
-
         const initAgent = async () => {
-          let agent: Agent;
-          let isReconnect = false;
+          let sessionBindResult: SessionBindResult | null = null;
+          let preloadedSessionConversations: Awaited<ReturnType<typeof loadSessionConversations>> | null = null;
 
-          if (existingAgent) {
-            // 复用已有 Agent（页面刷新场景）
-            agent = existingAgent;
-            isReconnect = true;
-            console.log(`[WebSocket] Reusing agent for session: ${agent.getSessionId()}`);
-          } else {
-            // 创建新 Agent
-            agent = new Agent({
+          // 优先按客户端请求的 sessionId 绑定（页面刷新/重启恢复）
+          const requestedSessionId = ws.data.requestedSessionId;
+          if (requestedSessionId) {
+            const pooledAgent = sessionPool.get(requestedSessionId);
+            if (pooledAgent) {
+              sessionBindResult = {
+                agent: pooledAgent,
+                sessionId: requestedSessionId,
+                createdNew: false,
+              };
+              console.log(`[WebSocket] Reusing requested session from pool: ${requestedSessionId}`);
+            } else {
+              const persisted = await loadSessionConversations(requestedSessionId, {
+                scope: 'all',
+                limit: SESSION_HISTORY_LOAD_LIMIT,
+              });
+              if (persisted.length > 0) {
+                preloadedSessionConversations = persisted;
+                const restoredAgent = new Agent({
+                  llmConfig: ws.data.llmConfig,
+                  maxSteps: ws.data.maxSteps,
+                  sessionId: requestedSessionId,
+                });
+                await restoredAgent.init();
+                restoredAgent.hydrateConversationHistory(
+                  persisted,
+                  SESSION_HISTORY_RESTORE_TURNS
+                );
+                sessionBindResult = {
+                  agent: restoredAgent,
+                  sessionId: requestedSessionId,
+                  createdNew: false,
+                };
+                console.log(`[WebSocket] Restored requested session from memory: ${requestedSessionId}`);
+              } else {
+                console.warn(`[WebSocket] Requested session not found: ${requestedSessionId}`);
+              }
+            }
+          }
+
+          // 回退：复用当前活跃 session（兼容旧行为）
+          if (!sessionBindResult) {
+            const fallbackAgent = activeSessionIdForPool ? sessionPool.get(activeSessionIdForPool) : null;
+            if (fallbackAgent) {
+              const fallbackSessionId = fallbackAgent.getSessionId();
+              sessionBindResult = {
+                agent: fallbackAgent,
+                sessionId: fallbackSessionId,
+                createdNew: false,
+              };
+              console.log(`[WebSocket] Reusing active session: ${fallbackSessionId}`);
+            }
+          }
+
+          // 仍未命中则创建新 session
+          if (!sessionBindResult) {
+            const newAgent = new Agent({
               llmConfig: ws.data.llmConfig,
               maxSteps: ws.data.maxSteps,
             });
-            await agent.init();
-            console.log(`[WebSocket] New agent created for session: ${agent.getSessionId()}`);
+            await newAgent.init();
+            const newSessionId = newAgent.getSessionId();
+            sessionBindResult = {
+              agent: newAgent,
+              sessionId: newSessionId,
+              createdNew: true,
+            };
+            console.log(`[WebSocket] New agent created for session: ${newSessionId}`);
           }
 
+          const { agent, sessionId, createdNew } = sessionBindResult;
           ws.data.agent = agent;
-          const sessionId = agent.getSessionId();
+          ws.data.requestedSessionId = sessionId;
           sessionPool.set(sessionId, agent);
           activeSessionIdForPool = sessionId;
 
+          const sessionBoundMsg: WebSocketMessage = {
+            type: 'session_bound',
+            sessionId,
+          };
+          ws.send(JSON.stringify(sessionBoundMsg));
+
           // 发送当前 session 的对话历史
           try {
-            const sessionConversations = await loadSessionConversations(sessionId);
+            const sessionConversations =
+              preloadedSessionConversations ??
+              await loadSessionConversations(sessionId, {
+                scope: 'all',
+                limit: SESSION_HISTORY_LOAD_LIMIT,
+              });
             if (sessionConversations.length > 0) {
               const historyMsg: WebSocketMessage = {
                 type: 'chat_history',
@@ -492,8 +607,8 @@ export async function startWebServer(port: number = 3000) {
             console.warn('[WebSocket] Failed to send chat history:', error);
           }
 
-          // 只在新 session 时生成问候语，刷新不重复
-          if (!isReconnect) {
+          // 只在全新 session 时生成问候语，刷新/恢复不重复
+          if (createdNew) {
             const projectContext = `Current working directory: ${process.cwd()}`;
             agent.generateGreeting(projectContext)
               .then((greeting) => {
@@ -740,6 +855,12 @@ export async function startWebServer(port: number = 3000) {
                 const newSessionId = newAgent.getSessionId();
                 sessionPool.set(newSessionId, newAgent);
                 activeSessionIdForPool = newSessionId;
+                ws.data.requestedSessionId = newSessionId;
+
+                ws.send(JSON.stringify({
+                  type: 'session_bound',
+                  sessionId: newSessionId,
+                } as WebSocketMessage));
 
                 const sysMsg: WebSocketMessage = {
                   type: 'system',

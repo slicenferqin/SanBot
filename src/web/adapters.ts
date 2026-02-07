@@ -21,6 +21,7 @@ export type WebSocketMessage =
   | { type: 'confirm_request'; id: string; command: string; level: string; reasons: string[] }
   | { type: 'llm_config'; providerId: string; model: string; providers: Array<{ id: string; name: string; description?: string; provider: string }>; models: string[]; temperature?: number }
   | { type: 'llm_models'; providerId: string; models: string[] }
+  | { type: 'session_bound'; sessionId: string }
   | { type: 'llm_update_result'; success: boolean; error?: string; providerId?: string; model?: string; temperature?: number };
 
 /**

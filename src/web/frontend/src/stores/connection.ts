@@ -6,6 +6,7 @@ export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'er
 interface ConnectionState {
   status: ConnectionStatus
   ws: WebSocket | null
+  sessionId: string | null
   providerId: string
   model: string
   temperature: number
@@ -14,6 +15,7 @@ interface ConnectionState {
 
   setStatus: (status: ConnectionStatus) => void
   setWs: (ws: WebSocket | null) => void
+  setSessionId: (sessionId: string | null) => void
   setProviderConfig: (config: {
     providerId: string
     model: string
@@ -28,6 +30,7 @@ interface ConnectionState {
 export const useConnectionStore = create<ConnectionState>((set, get) => ({
   status: 'disconnected',
   ws: null,
+  sessionId: null,
   providerId: '',
   model: '',
   temperature: 0.7,
@@ -36,6 +39,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
   setStatus: (status) => set({ status }),
   setWs: (ws) => set({ ws }),
+  setSessionId: (sessionId) => set({ sessionId }),
 
   setProviderConfig: (config) => set({
     providerId: config.providerId,
