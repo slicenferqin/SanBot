@@ -6,6 +6,7 @@ import type { ServerMessage } from '@/lib/ws-types'
 const SESSION_STORAGE_KEY = 'sanbot_session_id'
 const SESSION_COOKIE_NAME = 'sanbot_session'
 const SESSION_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/
+const MAX_SEEN_MESSAGE_IDS = 2000
 
 function normalizeSessionId(value: string | null | undefined): string | null {
   if (!value) return null
@@ -54,6 +55,8 @@ export function useWebSocket() {
   const socketSessionIdRef = useRef<string | null>(null)
   const suppressReconnectRef = useRef(false)
   const unmountingRef = useRef(false)
+  const seenMessageIdsRef = useRef<Set<string>>(new Set())
+  const seenMessageOrderRef = useRef<string[]>([])
 
   const setStatus = useConnectionStore((state) => state.setStatus)
   const setWs = useConnectionStore((state) => state.setWs)
@@ -71,6 +74,27 @@ export function useWebSocket() {
   const setConfirmation = useChatStore((state) => state.setConfirmation)
   const addTurnSummary = useChatStore((state) => state.addTurnSummary)
   const loadHistory = useChatStore((state) => state.loadHistory)
+
+  const shouldDropMessage = useCallback((message: ServerMessage): boolean => {
+    const messageId = message.meta?.messageId
+    if (!messageId) return false
+
+    if (seenMessageIdsRef.current.has(messageId)) {
+      return true
+    }
+
+    seenMessageIdsRef.current.add(messageId)
+    seenMessageOrderRef.current.push(messageId)
+
+    while (seenMessageOrderRef.current.length > MAX_SEEN_MESSAGE_IDS) {
+      const oldest = seenMessageOrderRef.current.shift()
+      if (oldest) {
+        seenMessageIdsRef.current.delete(oldest)
+      }
+    }
+
+    return false
+  }, [])
 
   const connect = useCallback((force = false) => {
     const existingSocket = wsRef.current
@@ -101,6 +125,8 @@ export function useWebSocket() {
 
     const ws = new WebSocket(wsUrl.toString())
     wsRef.current = ws
+    seenMessageIdsRef.current.clear()
+    seenMessageOrderRef.current = []
 
     ws.onopen = () => {
       if (wsRef.current !== ws) return
@@ -136,8 +162,14 @@ export function useWebSocket() {
     }
 
     ws.onmessage = (event) => {
+      if (wsRef.current !== ws) return
+
       try {
         const data: ServerMessage = JSON.parse(event.data)
+
+        if (shouldDropMessage(data)) {
+          return
+        }
 
         switch (data.type) {
           case 'system':
@@ -237,6 +269,7 @@ export function useWebSocket() {
     loadHistory,
     setProviderConfig,
     setModels,
+    shouldDropMessage,
   ])
 
   useEffect(() => {

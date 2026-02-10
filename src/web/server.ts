@@ -18,7 +18,7 @@ import {
   saveSessionLLMConfig,
 } from '../memory/storage.ts';
 import { runToolTool } from '../tools/self-tool.ts';
-import { WebStreamWriter, WebToolSpinner, type WebSocketMessage } from './adapters.ts';
+import { WebStreamWriter, WebToolSpinner, sendWebSocketMessage, type WebSocketMessage } from './adapters.ts';
 import { SessionPool } from './session-pool.ts';
 import { join } from 'path';
 import { getRecentContextEvents } from '../context/tracker.ts';
@@ -60,6 +60,7 @@ interface WebSocketData {
   currentMessageId?: string;  // 当前消息ID
   connectionId: string | null;
   boundSessionId: string | null;
+  messageSeq: number;
 }
 
 interface SessionBindResult {
@@ -79,6 +80,7 @@ function createConnectionData(config: Config, requestedSessionId: string | null 
     isProcessingConfirmation: false,
     connectionId: null,
     boundSessionId: null,
+    messageSeq: 0,
   };
 }
 
@@ -768,7 +770,7 @@ export async function startWebServer(port: number = 3000) {
             type: 'session_bound',
             sessionId,
           };
-          ws.send(JSON.stringify(sessionBoundMsg));
+          sendWebSocketMessage(ws, sessionBoundMsg);
 
           // 发送当前 session 的对话历史
           try {
@@ -793,7 +795,7 @@ export async function startWebServer(port: number = 3000) {
                   })),
                 })),
               };
-              ws.send(JSON.stringify(historyMsg));
+              sendWebSocketMessage(ws, historyMsg);
             }
           } catch (error) {
             console.warn('[WebSocket] Failed to send chat history:', error);
@@ -804,9 +806,9 @@ export async function startWebServer(port: number = 3000) {
             const projectContext = `Current working directory: ${process.cwd()}`;
             agent.generateGreeting(projectContext)
               .then((greeting) => {
-                ws.send(JSON.stringify({ type: 'assistant_start' } as WebSocketMessage));
-                ws.send(JSON.stringify({ type: 'assistant_delta', content: greeting } as WebSocketMessage));
-                ws.send(JSON.stringify({ type: 'assistant_end', content: greeting } as WebSocketMessage));
+                sendWebSocketMessage(ws, { type: 'assistant_start' } as WebSocketMessage);
+                sendWebSocketMessage(ws, { type: 'assistant_delta', content: greeting } as WebSocketMessage);
+                sendWebSocketMessage(ws, { type: 'assistant_end', content: greeting } as WebSocketMessage);
               })
               .catch((error) => {
                 console.error('Error generating greeting:', error);
@@ -823,7 +825,7 @@ export async function startWebServer(port: number = 3000) {
           type: 'system',
           message: 'Connected to SanBot',
         };
-        ws.send(JSON.stringify(welcomeMsg));
+        sendWebSocketMessage(ws, welcomeMsg);
       },
 
       async message(ws: ServerWebSocket<WebSocketData>, message: string | Buffer) {
@@ -860,13 +862,13 @@ export async function startWebServer(port: number = 3000) {
               type: 'assistant_end',
               content: '',
             };
-            ws.send(JSON.stringify(endMsg));
+            sendWebSocketMessage(ws, endMsg);
 
             const sysMsg: WebSocketMessage = {
               type: 'system',
               message: 'Request stopped',
             };
-            ws.send(JSON.stringify(sysMsg));
+            sendWebSocketMessage(ws, sysMsg);
             return;
           }
 
@@ -889,7 +891,7 @@ export async function startWebServer(port: number = 3000) {
               providerId: data.providerId,
               models,
             };
-            ws.send(JSON.stringify(modelsMsg));
+            sendWebSocketMessage(ws, modelsMsg);
             return;
           }
 
@@ -923,7 +925,7 @@ export async function startWebServer(port: number = 3000) {
                 model: data.model,
                 temperature: nextLLMConfig.temperature,
               };
-              ws.send(JSON.stringify(okMsg));
+              sendWebSocketMessage(ws, okMsg);
               await sendProviderConfig(ws, data.providerId, nextLLMConfig);
             } catch (updateError: any) {
               const errMsg: WebSocketMessage = {
@@ -931,7 +933,7 @@ export async function startWebServer(port: number = 3000) {
                 success: false,
                 error: updateError?.message || 'Failed to update LLM config',
               };
-              ws.send(JSON.stringify(errMsg));
+              sendWebSocketMessage(ws, errMsg);
             }
             return;
           }
@@ -944,7 +946,7 @@ export async function startWebServer(port: number = 3000) {
                 type: 'system',
                 message: 'Agent is still initializing. Please wait...',
               };
-              ws.send(JSON.stringify(errorMsg));
+              sendWebSocketMessage(ws, errorMsg);
               return;
             }
 
@@ -965,19 +967,19 @@ export async function startWebServer(port: number = 3000) {
               type: 'user_message',
               content: data.content,
             };
-            ws.send(JSON.stringify(userMsg));
+            sendWebSocketMessage(ws, userMsg);
 
             // 发送状态
             const statusMsg: WebSocketMessage = {
               type: 'status',
               status: 'thinking',
             };
-            ws.send(JSON.stringify(statusMsg));
+            sendWebSocketMessage(ws, statusMsg);
 
             const startMsg: WebSocketMessage = {
               type: 'assistant_start',
             };
-            ws.send(JSON.stringify(startMsg));
+            sendWebSocketMessage(ws, startMsg);
 
             const turnStartedAtMs = Date.now();
             const turnTools = {
@@ -1016,7 +1018,7 @@ export async function startWebServer(port: number = 3000) {
                 type: 'system',
                 message: `Chat error: ${chatError.message || 'Unknown error'}`,
               };
-              ws.send(JSON.stringify(errorMsg));
+              sendWebSocketMessage(ws, errorMsg);
             }
 
             // 如果被停止，不再发送结束消息
@@ -1034,14 +1036,14 @@ export async function startWebServer(port: number = 3000) {
               tools: turnTools,
               stopped: ws.data.shouldStop ? true : undefined,
             };
-            ws.send(JSON.stringify(turnSummaryMsg));
+            sendWebSocketMessage(ws, turnSummaryMsg);
 
             // 更新状态
             const idleMsg: WebSocketMessage = {
               type: 'status',
               status: 'idle',
             };
-            ws.send(JSON.stringify(idleMsg));
+            sendWebSocketMessage(ws, idleMsg);
           } else if (data.type === 'command') {
             // 处理命令
             const cmd = data.command.toLowerCase();
@@ -1070,24 +1072,24 @@ export async function startWebServer(port: number = 3000) {
                 await persistSessionLLMState(newSessionId, ws.data.config, ws.data.llmConfig);
                 sweepSessionPool('new-command');
 
-                ws.send(JSON.stringify({
+                sendWebSocketMessage(ws, {
                   type: 'session_bound',
                   sessionId: newSessionId,
-                } as WebSocketMessage));
+                } as WebSocketMessage);
 
                 const sysMsg: WebSocketMessage = {
                   type: 'system',
                   message: 'New session created.',
                 };
-                ws.send(JSON.stringify(sysMsg));
+                sendWebSocketMessage(ws, sysMsg);
 
                 // 生成新问候语
                 const projectContext = `Current working directory: ${process.cwd()}`;
                 newAgent.generateGreeting(projectContext)
                   .then((greeting) => {
-                    ws.send(JSON.stringify({ type: 'assistant_start' } as WebSocketMessage));
-                    ws.send(JSON.stringify({ type: 'assistant_delta', content: greeting } as WebSocketMessage));
-                    ws.send(JSON.stringify({ type: 'assistant_end', content: greeting } as WebSocketMessage));
+                    sendWebSocketMessage(ws, { type: 'assistant_start' } as WebSocketMessage);
+                    sendWebSocketMessage(ws, { type: 'assistant_delta', content: greeting } as WebSocketMessage);
+                    sendWebSocketMessage(ws, { type: 'assistant_end', content: greeting } as WebSocketMessage);
                   })
                   .catch((error) => {
                     console.error('Error generating greeting:', error);
@@ -1098,20 +1100,20 @@ export async function startWebServer(port: number = 3000) {
                   type: 'system',
                   message: 'Conversation history cleared.',
                 };
-                ws.send(JSON.stringify(sysMsg));
+                sendWebSocketMessage(ws, sysMsg);
               }
             } else if (cmd === '/help') {
               const sysMsg: WebSocketMessage = {
                 type: 'system',
                 message: 'Commands: /clear, /help',
               };
-              ws.send(JSON.stringify(sysMsg));
+              sendWebSocketMessage(ws, sysMsg);
             } else {
               const sysMsg: WebSocketMessage = {
                 type: 'system',
                 message: `Unknown command: ${data.command}`,
               };
-              ws.send(JSON.stringify(sysMsg));
+              sendWebSocketMessage(ws, sysMsg);
             }
           }
         } catch (error: any) {
@@ -1120,7 +1122,7 @@ export async function startWebServer(port: number = 3000) {
             type: 'system',
             message: `Error: ${error.message}`,
           };
-          ws.send(JSON.stringify(errorMsg));
+          sendWebSocketMessage(ws, errorMsg);
         }
       },
 
@@ -1262,7 +1264,7 @@ async function sendProviderConfig(
     models,
     temperature: llmConfig.temperature ?? 0.3,
   };
-  ws.send(JSON.stringify(configMsg));
+  sendWebSocketMessage(ws, configMsg);
 }
 
 /**

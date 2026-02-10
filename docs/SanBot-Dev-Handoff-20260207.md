@@ -8,8 +8,9 @@
   1) 确认路由去全局态（改为异步上下文）
   2) SessionPool 生命周期治理（TTL + max size + sweep）
 - 新增 `/api/health`，具备基础可观测性
+- M5 已完成第一阶段：WS envelope + 前端 messageId 去重
 
-结论：可以继续进入 M5（协议幂等 + 回放一致性 + 自动化回归）。
+结论：M5 进入收尾阶段（契约测试和回放一致性）。
 
 ---
 
@@ -43,6 +44,21 @@
    - `saveSessionLLMConfig` 改为原子写（tmp + rename）
    - 保持坏文件容错回退逻辑
 
+### 1.3 本轮新增架构层（M5 第一阶段）
+1. WS envelope 标准化
+   - `src/web/adapters.ts` 新增统一发送器 `sendWebSocketMessage(...)`
+   - 下行消息附带 `meta`：`v/seq/messageId/sessionId/connectionId/timestamp`
+   - 服务端发送路径统一走 envelope 发送
+
+2. 前端幂等消费
+   - `src/web/frontend/src/hooks/useWebSocket.ts`
+   - 基于 `meta.messageId` 去重，带上限缓存（默认 2000）
+   - 忽略旧 socket 的晚到消息，降低重连/切会话边界抖动
+
+3. envelope 单测
+   - `tests/ws-envelope.test.ts`
+   - 覆盖序号递增、messageId 生成、无序列状态降级行为
+
 ---
 
 ## 2. 关键代码变更
@@ -51,13 +67,17 @@
 - `src/web/session-pool.ts`
 - `tests/session-pool.test.ts`
 - `tests/confirmation-context.test.ts`
+- `tests/ws-envelope.test.ts`
 
 ### 修改
 - `src/utils/confirmation.ts`
 - `src/web/server.ts`
+- `src/web/adapters.ts`
 - `src/memory/storage.ts`
 - `src/index.ts`
 - `src/agent.ts`
+- `src/web/frontend/src/lib/ws-types.ts`
+- `src/web/frontend/src/hooks/useWebSocket.ts`
 - `tests/session-llm-config.test.ts`
 
 ### 文档
@@ -104,9 +124,9 @@
   - [x] 确认机制去全局态
   - [x] SessionPool 生命周期治理
 - M5：契约冻结 + 自动化回归（P1）
-  - [ ] WS envelope 规范化（`v/seq/sessionId/messageId`）
-  - [ ] 前端事件幂等消费（重连去重）
-  - [ ] 契约测试补齐（WS + /api/*）
+  - [x] WS envelope 规范化（`v/seq/sessionId/messageId`）
+  - [x] 前端事件幂等消费（基于 `messageId` 去重）
+  - [ ] 契约测试补齐（WS + /api/*，含回放一致性）
 - M6：运维与排障闭环（P1）
   - [~] 健康检查接口已就位（第一步）
   - [ ] 启动自检与统一日志字段
@@ -116,10 +136,10 @@
 
 ## 6. 下一位接手建议（按顺序）
 
-1. 先做 M5-A：WS envelope 版本化 + 序号化。
-2. 再做 M5-B：前端事件去重（基于 `seq/messageId`）。
-3. 最后补 M5-C 契约测试（保证重连不重复渲染）。
-4. 进入 M6：统一日志字段 + 调试导出。
+1. 先做 M5-C：补齐 WS/API 契约测试（重点 chat_history + tool events 回放一致性）。
+2. 增加 reconnect 场景的端到端去重回归用例。
+3. 进入 M6：统一日志字段 + 调试导出。
+4. 视情况评估是否引入服务器端增量重放接口（可选）。
 
 ---
 

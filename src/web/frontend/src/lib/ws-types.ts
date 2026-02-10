@@ -4,16 +4,29 @@
 
 export type ToolRunStatus = 'success' | 'error'
 
+export interface MessageMeta {
+  v: 1
+  seq: number
+  messageId: string
+  sessionId: string | null
+  connectionId: string | null
+  timestamp: string
+}
+
+type WithMeta<T extends { type: string }> = T & {
+  meta?: MessageMeta
+}
+
 // Server -> Client messages
 export type ServerMessage =
-  | { type: 'system'; message: string }
-  | { type: 'user_message'; content: string }
-  | { type: 'assistant_start' }
-  | { type: 'assistant_delta'; content: string }
-  | { type: 'assistant_end'; content: string }
-  | { type: 'status'; status: 'idle' | 'thinking' | 'streaming' }
-  | { type: 'tool_start'; id: string; name: string; input: unknown; startedAt: string }
-  | {
+  | WithMeta<{ type: 'system'; message: string }>
+  | WithMeta<{ type: 'user_message'; content: string }>
+  | WithMeta<{ type: 'assistant_start' }>
+  | WithMeta<{ type: 'assistant_delta'; content: string }>
+  | WithMeta<{ type: 'assistant_end'; content: string }>
+  | WithMeta<{ type: 'status'; status: 'idle' | 'thinking' | 'streaming' }>
+  | WithMeta<{ type: 'tool_start'; id: string; name: string; input: unknown; startedAt: string }>
+  | WithMeta<{
       type: 'tool_end'
       id: string
       name: string
@@ -21,8 +34,8 @@ export type ServerMessage =
       message?: string
       endedAt: string
       durationMs: number
-    }
-  | {
+    }>
+  | WithMeta<{
       type: 'turn_summary'
       startedAt: string
       endedAt: string
@@ -33,27 +46,27 @@ export type ServerMessage =
         error: number
       }
       stopped?: boolean
-    }
-  | { type: 'confirm_request'; id: string; command: string; level: string; reasons: string[] }
-  | { type: 'chat_history'; messages: HistoryMessage[] }
-  | { type: 'session_bound'; sessionId: string }
-  | {
+    }>
+  | WithMeta<{ type: 'confirm_request'; id: string; command: string; level: string; reasons: string[] }>
+  | WithMeta<{ type: 'chat_history'; messages: HistoryMessage[] }>
+  | WithMeta<{ type: 'session_bound'; sessionId: string }>
+  | WithMeta<{
       type: 'llm_config'
       providerId: string
       model: string
       providers: ProviderInfo[]
       models: string[]
       temperature: number
-    }
-  | { type: 'llm_models'; providerId: string; models: string[] }
-  | {
+    }>
+  | WithMeta<{ type: 'llm_models'; providerId: string; models: string[] }>
+  | WithMeta<{
       type: 'llm_update_result'
       success: boolean
       providerId?: string
       model?: string
       temperature?: number
       error?: string
-    }
+    }>
 
 // Client -> Server messages
 export type ClientMessage =

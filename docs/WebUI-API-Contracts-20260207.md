@@ -94,6 +94,36 @@
 
 ## WebSocket（Server -> Client）
 
+### 消息 Envelope（meta）
+
+服务端会在绝大多数 WS 下行消息附带 `meta`，用于幂等、顺序和排障。
+
+- `meta.v`: 协议版本（当前为 `1`）
+- `meta.seq`: 连接内单调递增序号
+- `meta.messageId`: 唯一消息 ID（格式：`<connectionId>:<seq>`）
+- `meta.sessionId`: 当前绑定 session
+- `meta.connectionId`: 当前连接 ID
+- `meta.timestamp`: 服务端发送时间（ISO）
+
+```json
+{
+  "type": "status",
+  "status": "thinking",
+  "meta": {
+    "v": 1,
+    "seq": 42,
+    "messageId": "1700000000-abc:42",
+    "sessionId": "1700000000000-abcd12",
+    "connectionId": "1700000000-abc",
+    "timestamp": "2026-02-07T09:10:00.000Z"
+  }
+}
+```
+
+前端应优先用 `meta.messageId` 做去重消费。
+
+---
+
 ### 工具事件流
 
 - `tool_start`
@@ -104,7 +134,8 @@
   "id": "tool-1",
   "name": "read_file",
   "input": { "path": "src/web/server.ts" },
-  "startedAt": "2026-02-07T03:21:02.120Z"
+  "startedAt": "2026-02-07T03:21:02.120Z",
+  "meta": { "v": 1, "seq": 12, "messageId": "conn:12", "sessionId": "sid", "connectionId": "conn", "timestamp": "2026-02-07T03:21:02.120Z" }
 }
 ```
 
@@ -118,7 +149,8 @@
   "status": "success",
   "endedAt": "2026-02-07T03:21:02.340Z",
   "durationMs": 220,
-  "message": "Read 120 lines"
+  "message": "Read 120 lines",
+  "meta": { "v": 1, "seq": 13, "messageId": "conn:13", "sessionId": "sid", "connectionId": "conn", "timestamp": "2026-02-07T03:21:02.340Z" }
 }
 ```
 
