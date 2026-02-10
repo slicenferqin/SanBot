@@ -7,6 +7,8 @@ interface ConnectionState {
   status: ConnectionStatus
   ws: WebSocket | null
   sessionId: string | null
+  stableSessionId: string | null
+  pendingSessionId: string | null
   providerId: string
   model: string
   temperature: number
@@ -16,6 +18,9 @@ interface ConnectionState {
   setStatus: (status: ConnectionStatus) => void
   setWs: (ws: WebSocket | null) => void
   setSessionId: (sessionId: string | null) => void
+  requestSessionSwitch: (sessionId: string) => void
+  markSessionBound: (sessionId: string) => void
+  clearPendingSessionId: () => void
   setProviderConfig: (config: {
     providerId: string
     model: string
@@ -31,6 +36,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   status: 'disconnected',
   ws: null,
   sessionId: null,
+  stableSessionId: null,
+  pendingSessionId: null,
   providerId: '',
   model: '',
   temperature: 0.7,
@@ -39,7 +46,24 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
   setStatus: (status) => set({ status }),
   setWs: (ws) => set({ ws }),
-  setSessionId: (sessionId) => set({ sessionId }),
+  setSessionId: (sessionId) => set((state) => ({
+    sessionId,
+    stableSessionId: state.pendingSessionId ? state.stableSessionId : sessionId,
+  })),
+  requestSessionSwitch: (sessionId) => set((state) => ({
+    sessionId,
+    pendingSessionId: sessionId,
+    stableSessionId: state.stableSessionId ?? state.sessionId,
+  })),
+  markSessionBound: (sessionId) => set({
+    sessionId,
+    stableSessionId: sessionId,
+    pendingSessionId: null,
+  }),
+  clearPendingSessionId: () => set((state) => ({
+    pendingSessionId: null,
+    sessionId: state.stableSessionId ?? state.sessionId,
+  })),
 
   setProviderConfig: (config) => set({
     providerId: config.providerId,

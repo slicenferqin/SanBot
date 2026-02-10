@@ -36,6 +36,25 @@
 
 ---
 
+### `GET /api/debug/snapshot`
+
+运行时调试快照（用于远程排障和工单附带信息）。
+
+- Query
+  - `sessionsLimit`（可选，默认 `20`，最大 `100`）
+  - `sessionDays`（可选，默认 `7`，最大 `30`）
+  - `redact`（可选，默认 `1`）：`1/true` 返回脱敏快照，`0/false` 返回原始预览
+
+- Response 关键字段
+  - `generatedAt`: 快照生成时间
+  - `redacted`: 是否为脱敏输出
+  - `health`: 与 `/api/health` 同结构
+  - `runtime`: 前端模式、工作目录、会话池配置、provider 目录摘要
+  - `activeConnections`: 当前连接与绑定 session 映射
+  - `recentSessions`: 最近会话摘要（含 session 级模型）
+
+---
+
 ### `GET /api/context`
 
 查询上下文注入与会话摘要，支持 session 维度过滤。
@@ -96,7 +115,7 @@
 
 ### 消息 Envelope（meta）
 
-服务端会在绝大多数 WS 下行消息附带 `meta`，用于幂等、顺序和排障。
+服务端会在 WS 下行消息附带 `meta`（含 `confirm_request`），用于幂等、顺序和排障。
 
 - `meta.v`: 协议版本（当前为 `1`）
 - `meta.seq`: 连接内单调递增序号
@@ -120,7 +139,7 @@
 }
 ```
 
-前端应优先用 `meta.messageId` 做去重消费。
+前端应优先用 `meta.messageId` 做去重消费；仅在极少数非 envelope 降级路径下允许 `meta` 缺失。
 
 ---
 

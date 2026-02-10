@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useChat } from '@/hooks/useChat'
 import { useConnectionStore } from '@/stores/connection'
 import { useUIStore } from '@/stores/ui'
@@ -11,6 +11,11 @@ const EFFORT_PRESETS = [
 ] as const
 
 type EffortPresetId = (typeof EFFORT_PRESETS)[number]['id']
+
+type SessionDraftMap = Record<string, string>
+
+const SESSION_DRAFTS_STORAGE_KEY = 'sanbot_session_drafts'
+const DEFAULT_DRAFT_KEY = '__default__'
 
 function resolveEffortPreset(temperature: number): EffortPresetId {
   let closestId: EffortPresetId = 'balanced'
@@ -27,9 +32,49 @@ function resolveEffortPreset(temperature: number): EffortPresetId {
   return closestId
 }
 
+function resolveDraftKey(sessionId: string | null): string {
+  return sessionId ? `session:${sessionId}` : DEFAULT_DRAFT_KEY
+}
+
+function loadDraftsFromStorage(): SessionDraftMap {
+  if (typeof window === 'undefined') return {}
+
+  try {
+    const raw = window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY)
+    if (!raw) return {}
+
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') {
+      return {}
+    }
+
+    const result: SessionDraftMap = {}
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === 'string' && value.length > 0) {
+        result[key] = value
+      }
+    }
+
+    return result
+  } catch {
+    return {}
+  }
+}
+
+function persistDraftsToStorage(drafts: SessionDraftMap): void {
+  if (typeof window === 'undefined') return
+
+  try {
+    window.localStorage.setItem(SESSION_DRAFTS_STORAGE_KEY, JSON.stringify(drafts))
+  } catch {
+    // Ignore storage quota or serialization errors.
+  }
+}
+
 export function ChatInput() {
   const [input, setInput] = useState('')
   const [effortPreset, setEffortPreset] = useState<EffortPresetId>('balanced')
+  const [drafts, setDrafts] = useState<SessionDraftMap>(() => loadDraftsFromStorage())
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -40,6 +85,7 @@ export function ChatInput() {
   const temperature = useConnectionStore((state) => state.temperature)
   const updateLLM = useConnectionStore((state) => state.updateLLM)
   const sessionId = useConnectionStore((state) => state.sessionId)
+  const pendingSessionId = useConnectionStore((state) => state.pendingSessionId)
 
   const openDrawer = useUIStore((state) => state.openDrawer)
 
@@ -47,7 +93,13 @@ export function ChatInput() {
     ? '⌘↵ send · ⌘K focus'
     : 'Ctrl+Enter send · Ctrl+K focus'
 
-  const sessionLabel = sessionId ? `Session ${sessionId.slice(0, 8)}` : 'No session'
+  const sessionLabel = pendingSessionId
+    ? `Switching to ${pendingSessionId.slice(0, 8)}...`
+    : sessionId
+      ? `Session ${sessionId.slice(0, 8)}`
+      : 'No session'
+
+  const activeDraftKey = useMemo(() => resolveDraftKey(sessionId), [sessionId])
 
   const availableModels = useMemo(() => {
     if (models.length > 0) {
@@ -61,9 +113,27 @@ export function ChatInput() {
     return []
   }, [models, model])
 
+  const setDraftValue = useCallback((draftKey: string, value: string) => {
+    setDrafts((previous) => {
+      const next = { ...previous }
+      if (value.trim().length === 0) {
+        delete next[draftKey]
+      } else {
+        next[draftKey] = value
+      }
+      persistDraftsToStorage(next)
+      return next
+    })
+  }, [])
+
   useEffect(() => {
     setEffortPreset(resolveEffortPreset(temperature))
   }, [temperature])
+
+  useEffect(() => {
+    const nextInput = drafts[activeDraftKey] ?? ''
+    setInput((current) => (current === nextInput ? current : nextInput))
+  }, [activeDraftKey, drafts])
 
   // Auto-resize textarea
   useEffect(() => {
@@ -88,8 +158,9 @@ export function ChatInput() {
   }, [])
 
   const handleSubmit = () => {
-    if (!input.trim() || !isConnected || isStreaming) return
+    if (!input.trim() || !isConnected || isStreaming || pendingSessionId) return
     sendMessage(input)
+    setDraftValue(activeDraftKey, '')
     setInput('')
   }
 
@@ -119,6 +190,11 @@ export function ChatInput() {
     }
   }
 
+  const handleInputChange = (value: string) => {
+    setInput(value)
+    setDraftValue(activeDraftKey, value)
+  }
+
   return (
     <div className="border-t border-border-1 bg-bg-0 px-3 py-3 sm:px-4 sm:py-4">
       <div className="max-w-5xl mx-auto space-y-3">
@@ -126,10 +202,10 @@ export function ChatInput() {
           <textarea
             ref={textareaRef}
             value={input}
-            onChange={(event) => setInput(event.target.value)}
+            onChange={(event) => handleInputChange(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={isConnected ? 'Ask for follow-up changes' : 'Connecting...'}
-            disabled={!isConnected}
+            placeholder={pendingSessionId ? 'Switching session...' : isConnected ? 'Ask for follow-up changes' : 'Connecting...'}
+            disabled={!isConnected || Boolean(pendingSessionId)}
             rows={1}
             className="w-full min-h-[84px] max-h-[260px] bg-transparent text-[20px] sm:text-[24px] lg:text-[28px] leading-[1.35] text-txt-1 placeholder:text-txt-3 resize-none border-none outline-none disabled:opacity-50 disabled:cursor-not-allowed"
           />
@@ -152,7 +228,7 @@ export function ChatInput() {
                 <select
                   value={model}
                   onChange={(event) => handleModelChange(event.target.value)}
-                  disabled={!isConnected || isStreaming || availableModels.length === 0}
+                  disabled={!isConnected || isStreaming || Boolean(pendingSessionId) || availableModels.length === 0}
                   className="bg-transparent border-none outline-none text-txt-1 disabled:opacity-50"
                 >
                   {availableModels.length === 0 ? (
@@ -172,7 +248,7 @@ export function ChatInput() {
                 <select
                   value={effortPreset}
                   onChange={(event) => handleEffortChange(event.target.value as EffortPresetId)}
-                  disabled={!isConnected || isStreaming}
+                  disabled={!isConnected || isStreaming || Boolean(pendingSessionId)}
                   className="bg-transparent border-none outline-none text-txt-1 disabled:opacity-50"
                 >
                   {EFFORT_PRESETS.map((preset) => (
@@ -197,7 +273,7 @@ export function ChatInput() {
             ) : (
               <button
                 onClick={handleSubmit}
-                disabled={!input.trim() || !isConnected}
+                disabled={!input.trim() || !isConnected || Boolean(pendingSessionId)}
                 className="h-11 w-11 sm:h-12 sm:w-12 rounded-full bg-accent hover:bg-accent/80 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed self-end"
                 title="Send message (⌘↵)"
               >

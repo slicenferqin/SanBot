@@ -4,6 +4,8 @@ import type {
   ToolLog,
   ContextResponse,
   SessionsResponse,
+  HealthResponse,
+  DebugSnapshotResponse,
 } from './ws-types'
 
 const API_BASE = '/api'
@@ -114,5 +116,33 @@ export async function fetchSessions(days = 7, limit = 50): Promise<SessionsRespo
 
   const res = await fetch(`${API_BASE}/sessions?${params.toString()}`)
   if (!res.ok) throw new Error('Failed to fetch sessions')
+  return res.json()
+}
+
+/**
+ * Fetch runtime health
+ */
+export async function fetchHealth(): Promise<HealthResponse> {
+  const res = await fetch(`${API_BASE}/health`)
+  if (!res.ok) throw new Error('Failed to fetch health')
+  return res.json()
+}
+
+/**
+ * Fetch debug snapshot
+ */
+export async function fetchDebugSnapshot(options?: {
+  sessionsLimit?: number
+  sessionDays?: number
+  redact?: boolean
+}): Promise<DebugSnapshotResponse> {
+  const params = new URLSearchParams()
+  if (options?.sessionsLimit) params.set('sessionsLimit', String(options.sessionsLimit))
+  if (options?.sessionDays) params.set('sessionDays', String(options.sessionDays))
+  if (typeof options?.redact === 'boolean') params.set('redact', options.redact ? '1' : '0')
+
+  const query = params.toString()
+  const res = await fetch(`${API_BASE}/debug/snapshot${query ? `?${query}` : ''}`)
+  if (!res.ok) throw new Error('Failed to fetch debug snapshot')
   return res.json()
 }

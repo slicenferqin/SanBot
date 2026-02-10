@@ -285,3 +285,58 @@ export interface SessionDigest {
 export interface SessionsResponse {
   sessions: SessionDigest[]
 }
+
+export interface HealthResponse {
+  status: 'ok'
+  timestamp: string
+  uptimeMs: number
+  websocket: {
+    connections: number
+    activeSessions: number
+  }
+  sessionPool: {
+    size: number
+    maxSize: number
+    idleTtlMs: number
+    oldestIdleMs?: number | null
+    newestIdleMs?: number | null
+    sweepIntervalMs: number
+    topSessions: Array<{
+      sessionId: string
+      idleMs: number
+      ageMs: number
+      hitCount: number
+      lastTouchedAt: string
+    }>
+  }
+}
+
+export interface DebugSnapshotResponse {
+  generatedAt: string
+  redacted: boolean
+  health: HealthResponse
+  runtime: {
+    cwd: string
+    frontendMode: 'dist' | 'static'
+    distDir: string
+    serverStartedAt: string
+    providerCount: number
+    providers: Array<{
+      id: string
+      name: string
+      provider: string
+      hasBaseUrl: boolean
+      hasStaticModels: boolean
+    }>
+    sessionPool: {
+      maxSize: number
+      idleTtlMs: number
+      sweepIntervalMs: number
+    }
+  }
+  activeConnections: Array<{
+    connectionId: string
+    sessionId: string
+  }>
+  recentSessions: SessionDigest[]
+}

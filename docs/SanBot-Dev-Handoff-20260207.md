@@ -8,9 +8,9 @@
   1) 确认路由去全局态（改为异步上下文）
   2) SessionPool 生命周期治理（TTL + max size + sweep）
 - 新增 `/api/health`，具备基础可观测性
-- M5 已完成第一阶段：WS envelope + 前端 messageId 去重
+- M5 已完成第二阶段：WS envelope + 前端 messageId 去重 + WS/API 契约测试
 
-结论：M5 进入收尾阶段（契约测试和回放一致性）。
+结论：M5 主干项已收口，进入回放一致性与 reconnect 场景补强。
 
 ---
 
@@ -22,6 +22,7 @@
 - 最近 7 天会话列表 + 切换（流式中禁止切换）
 - 会话级模型隔离 + 会话级模型持久化（重启后恢复）
 - 侧栏模型徽章 + 输入区 Codex 风格重构
+- 会话切换状态可视化（Switching 提示、切换期间防误发）
 
 ### 1.2 本轮新增架构层（M4）
 1. 确认路由去全局态（P0）
@@ -44,20 +45,33 @@
    - `saveSessionLLMConfig` 改为原子写（tmp + rename）
    - 保持坏文件容错回退逻辑
 
-### 1.3 本轮新增架构层（M5 第一阶段）
+### 1.3 本轮新增架构层（M5 第二阶段）
 1. WS envelope 标准化
    - `src/web/adapters.ts` 新增统一发送器 `sendWebSocketMessage(...)`
    - 下行消息附带 `meta`：`v/seq/messageId/sessionId/connectionId/timestamp`
-   - 服务端发送路径统一走 envelope 发送
+   - `confirm_request` 发送路径也统一走 envelope 发送
 
 2. 前端幂等消费
    - `src/web/frontend/src/hooks/useWebSocket.ts`
    - 基于 `meta.messageId` 去重，带上限缓存（默认 2000）
    - 忽略旧 socket 的晚到消息，降低重连/切会话边界抖动
 
-3. envelope 单测
-   - `tests/ws-envelope.test.ts`
-   - 覆盖序号递增、messageId 生成、无序列状态降级行为
+3. 契约测试补齐（M5-C）
+   - `tests/ws-envelope.test.ts`：覆盖序号递增、messageId 生成、无序列状态降级
+   - 新增 `tests/web-contracts.test.ts`：覆盖 `/api/health`、`/api/context`、`/api/sessions` 参数回退与响应结构
+   - 覆盖 WebSocket 下行 `meta` 协议字段与 `seq` 单调递增
+
+4. 服务端可运维性前置（M6）
+   - `startWebServer(...)` 支持测试注入配置并返回可关闭句柄
+   - WebSocket 关键日志统一携带 `connectionId/sessionId`
+   - 新增 `GET /api/debug/snapshot` 供一键排障导出
+
+5. WebUI 体验打磨
+   - Sidebar 支持会话切换进行中状态与阻断误操作
+   - Header / Composer 联动显示会话切换状态，避免切换窗口误发消息
+   - 输入框草稿改为 session 维度持久化（本地存储），跨会话切换自动恢复
+   - 工具事件时间线支持按轮次折叠分组，降低主时间线噪音
+   - Settings 新增 Runtime Diagnostics（health 面板 + debug snapshot 复制/下载，默认脱敏）
 
 ---
 
@@ -68,6 +82,7 @@
 - `tests/session-pool.test.ts`
 - `tests/confirmation-context.test.ts`
 - `tests/ws-envelope.test.ts`
+- `tests/web-contracts.test.ts`
 
 ### 修改
 - `src/utils/confirmation.ts`
@@ -88,13 +103,17 @@
 
 ## 3. 接口与配置说明
 
-### 3.1 新增健康接口
+### 3.1 健康与调试接口
 - `GET /api/health`
 - 返回：
   - `status/timestamp/uptimeMs`
   - `websocket.connections`
   - `websocket.activeSessions`
   - `sessionPool`（size/maxSize/idleTtlMs/sweepIntervalMs/topSessions）
+
+- `GET /api/debug/snapshot`
+  - 支持 `sessionsLimit/sessionDays` 参数
+  - 返回 health + runtime + activeConnections + recentSessions
 
 ### 3.2 SessionPool 环境变量
 - `SANBOT_SESSION_POOL_MAX`（默认 50）
@@ -115,6 +134,8 @@
 - 审计日志使用上下文 `sessionId`
 - SessionPool 过期回收 / 容量回收 / 最近会话行为
 - session-config 原子写临时文件无残留
+- `/api/health` / `/api/context` / `/api/sessions` 契约与参数回退
+- WebSocket 下行 envelope 字段与序号递增
 
 ---
 
@@ -126,20 +147,21 @@
 - M5：契约冻结 + 自动化回归（P1）
   - [x] WS envelope 规范化（`v/seq/sessionId/messageId`）
   - [x] 前端事件幂等消费（基于 `messageId` 去重）
-  - [ ] 契约测试补齐（WS + /api/*，含回放一致性）
+  - [x] 契约测试补齐（WS + /api/*，含参数回退）
+  - [ ] 回放一致性（`chat_history + tool events`）专项测试
 - M6：运维与排障闭环（P1）
-  - [~] 健康检查接口已就位（第一步）
-  - [ ] 启动自检与统一日志字段
+  - [~] 健康检查接口 + WebSocket 关键日志字段已就位
+  - [ ] 启动自检与统一日志字段收口
   - [ ] 一键调试导出
 
 ---
 
 ## 6. 下一位接手建议（按顺序）
 
-1. 先做 M5-C：补齐 WS/API 契约测试（重点 chat_history + tool events 回放一致性）。
-2. 增加 reconnect 场景的端到端去重回归用例。
-3. 进入 M6：统一日志字段 + 调试导出。
-4. 视情况评估是否引入服务器端增量重放接口（可选）。
+1. 优先补齐回放一致性测试（`chat_history + tool events`），明确刷新后渲染契约。
+2. 增加 reconnect 场景的端到端去重回归用例（断线重连/会话切换/迟到消息）。
+3. 继续 M6：启动自检日志 + 一键调试导出。
+4. 视情况评估服务器端增量重放接口（可选，支持大会话恢复）。
 
 ---
 

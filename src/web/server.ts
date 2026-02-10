@@ -20,6 +20,7 @@ import {
 import { runToolTool } from '../tools/self-tool.ts';
 import { WebStreamWriter, WebToolSpinner, sendWebSocketMessage, type WebSocketMessage } from './adapters.ts';
 import { SessionPool } from './session-pool.ts';
+import { redactSensitiveText } from '../utils/redaction.ts';
 import { join } from 'path';
 import { getRecentContextEvents } from '../context/tracker.ts';
 
@@ -67,6 +68,16 @@ interface SessionBindResult {
   agent: Agent;
   sessionId: string;
   createdNew: boolean;
+}
+
+export interface StartWebServerOptions {
+  config?: Config;
+}
+
+export interface StartedWebServer {
+  server: Bun.Server<WebSocketData>;
+  port: number;
+  stop: () => void;
 }
 
 function createConnectionData(config: Config, requestedSessionId: string | null = null): WebSocketData {
@@ -148,6 +159,15 @@ function resolveRequestedSessionId(req: Request): string | null {
   return normalizeSessionId(cookies.sanbot_session);
 }
 
+function parseRedactFlag(value: string | null, fallback = true): boolean {
+  if (!value) return fallback;
+
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return fallback;
+
+  return !['0', 'false', 'no', 'off'].includes(normalized);
+}
+
 const AUDIT_LEVELS = new Set(['safe', 'warning', 'danger', 'critical']);
 const AUDIT_ACTIONS = new Set(['approved', 'rejected', 'auto_blocked']);
 
@@ -212,9 +232,12 @@ function auditLogsToCsv(logs: AuditEntry[]): string {
 /**
  * 启动 WebUI 服务器
  */
-export async function startWebServer(port: number = 3000) {
+export async function startWebServer(
+  port: number = 3000,
+  options: StartWebServerOptions = {},
+): Promise<StartedWebServer> {
   // 加载配置
-  const config = await loadConfig();
+  const config = options.config ?? await loadConfig();
 
   console.log('🚀 Initializing SanBot WebUI...');
 
@@ -259,8 +282,100 @@ export async function startWebServer(port: number = 3000) {
   const useFrontendDist = await frontendIndexFile.exists();
   const distDir = useFrontendDist ? frontendDistDir : staticDir;
 
+  const frontendMode = useFrontendDist ? 'dist' : 'static';
+
   console.log(`📁 Serving static files from: ${distDir}`);
   console.log(`[SessionPool] max=${SESSION_POOL_MAX_SIZE} idleTTL=${SESSION_POOL_IDLE_TTL_MS}ms sweep=${SESSION_POOL_SWEEP_INTERVAL_MS}ms`);
+  console.log('[Startup] Self-check', {
+    frontendMode,
+    distDir,
+    providerCount: Object.keys(getAvailableProviders(config)).length,
+    sessionPool: {
+      maxSize: SESSION_POOL_MAX_SIZE,
+      idleTtlMs: SESSION_POOL_IDLE_TTL_MS,
+      sweepIntervalMs: SESSION_POOL_SWEEP_INTERVAL_MS,
+    },
+  });
+
+  const getActiveConnectionSnapshot = () => Array.from(activeConnectionSessions.entries()).map(([connectionId, sessionId]) => ({
+    connectionId,
+    sessionId,
+  }));
+
+  const buildHealthPayload = () => {
+    sweepSessionPool('health-check');
+
+    const stats = sessionPool.stats();
+    const activeSessionIds = getActiveSessionIds();
+
+    return {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      uptimeMs: Math.max(0, Date.now() - serverStartedAtMs),
+      websocket: {
+        connections: activeConnectionSessions.size,
+        activeSessions: activeSessionIds.size,
+      },
+      sessionPool: {
+        ...stats,
+        sweepIntervalMs: SESSION_POOL_SWEEP_INTERVAL_MS,
+        topSessions: sessionPool.snapshot(10),
+      },
+    };
+  };
+
+  const buildDebugSnapshot = async (sessionLimit: number, sessionDays: number, redactOutput: boolean) => {
+    const recentSessions = await listSessionDigests({
+      days: sessionDays,
+      limit: sessionLimit,
+    });
+
+    const sessionsWithLLM = await Promise.all(recentSessions.map(async (session) => {
+      const llm = await loadSessionLLMConfig(session.sessionId);
+      return {
+        ...session,
+        title: redactOutput ? redactSensitiveText(session.title) : session.title,
+        preview: redactOutput ? redactSensitiveText(session.preview) : session.preview,
+        llm: llm
+          ? {
+              providerId: llm.providerId,
+              model: llm.model,
+              temperature: llm.temperature,
+              updatedAt: llm.updatedAt,
+            }
+          : null,
+      };
+    }));
+
+    const providers = Object.entries(getAvailableProviders(config)).map(([id, provider]) => ({
+      id,
+      name: provider.name,
+      provider: provider.provider,
+      hasBaseUrl: Boolean(provider.baseUrl),
+      hasStaticModels: Boolean(provider.models && provider.models.length > 0),
+    }));
+
+    return {
+      generatedAt: new Date().toISOString(),
+      redacted: redactOutput,
+      health: buildHealthPayload(),
+      runtime: {
+        cwd: process.cwd(),
+        frontendMode,
+        distDir,
+        serverStartedAt: new Date(serverStartedAtMs).toISOString(),
+        providerCount: providers.length,
+        providers,
+        sessionPool: {
+          maxSize: SESSION_POOL_MAX_SIZE,
+          idleTtlMs: SESSION_POOL_IDLE_TTL_MS,
+          sweepIntervalMs: SESSION_POOL_SWEEP_INTERVAL_MS,
+        },
+      },
+      activeConnections: getActiveConnectionSnapshot(),
+      recentSessions: sessionsWithLLM,
+    };
+  };
 
   // 创建服务器
   const server = Bun.serve<WebSocketData>({
@@ -514,25 +629,26 @@ export async function startWebServer(port: number = 3000) {
       }
 
       if (url.pathname === '/api/health') {
-        sweepSessionPool('health-check');
+        return Response.json(buildHealthPayload());
+      }
 
-        const stats = sessionPool.stats();
-        const activeSessionIds = getActiveSessionIds();
+      if (url.pathname === '/api/debug/snapshot') {
+        const sessionsLimitParam = url.searchParams.get('sessionsLimit');
+        const parsedSessionsLimit = sessionsLimitParam ? Number.parseInt(sessionsLimitParam, 10) : 20;
+        const sessionsLimit = Number.isFinite(parsedSessionsLimit) && parsedSessionsLimit > 0
+          ? Math.min(parsedSessionsLimit, 100)
+          : 20;
 
-        return Response.json({
-          status: 'ok',
-          timestamp: new Date().toISOString(),
-          uptimeMs: Math.max(0, Date.now() - serverStartedAtMs),
-          websocket: {
-            connections: activeConnectionSessions.size,
-            activeSessions: activeSessionIds.size,
-          },
-          sessionPool: {
-            ...stats,
-            sweepIntervalMs: SESSION_POOL_SWEEP_INTERVAL_MS,
-            topSessions: sessionPool.snapshot(10),
-          },
-        });
+        const sessionDaysParam = url.searchParams.get('sessionDays');
+        const parsedSessionDays = sessionDaysParam ? Number.parseInt(sessionDaysParam, 10) : 7;
+        const sessionDays = Number.isFinite(parsedSessionDays) && parsedSessionDays > 0
+          ? Math.min(parsedSessionDays, 30)
+          : 7;
+
+        const redact = parseRedactFlag(url.searchParams.get('redact'), true);
+
+        const snapshot = await buildDebugSnapshot(sessionsLimit, sessionDays, redact);
+        return Response.json(snapshot);
       }
 
       if (url.pathname === '/api/context') {
@@ -628,17 +744,23 @@ export async function startWebServer(port: number = 3000) {
 
     websocket: {
       open(ws: ServerWebSocket<WebSocketData>) {
-        console.log('✅ Client connected');
-
         // 设置 WebSocket 确认回调（每个连接独立，使用队列）
         const connectionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
         ws.data.connectionId = connectionId;
 
+        console.log('[WebSocket] Client connected', {
+          connectionId,
+          requestedSessionId: ws.data.requestedSessionId,
+        });
+
         setWebSocketConfirmCallback(connectionId, async (command: string, analysis: DangerAnalysis) => {
-          console.log(`[WebSocket][${connectionId}] Queueing confirmation request`);
-          console.log(`[WebSocket][${connectionId}] Command:`, command);
-          console.log(`[WebSocket][${connectionId}] Level:`, analysis.level);
-          console.log(`[WebSocket][${connectionId}] Current queue size: ${ws.data.confirmationQueue.length}`);
+          console.log('[WebSocket] Queueing confirmation request', {
+            connectionId,
+            sessionId: ws.data.boundSessionId ?? ws.data.requestedSessionId ?? null,
+            command,
+            level: analysis.level,
+            queueSize: ws.data.confirmationQueue.length,
+          });
 
           return await new Promise((resolve) => {
             // 将确认请求加入队列
@@ -648,7 +770,11 @@ export async function startWebServer(port: number = 3000) {
               resolve,
             });
 
-            console.log(`[WebSocket][${connectionId}] Added to queue. New size: ${ws.data.confirmationQueue.length}`);
+            console.log('[WebSocket] Confirmation request queued', {
+              connectionId,
+              sessionId: ws.data.boundSessionId ?? ws.data.requestedSessionId ?? null,
+              queueSize: ws.data.confirmationQueue.length,
+            });
 
             // 如果这是队列中唯一的请求，立即处理
             if (ws.data.confirmationQueue.length === 1) {
@@ -675,7 +801,10 @@ export async function startWebServer(port: number = 3000) {
                 sessionId: requestedSessionId,
                 createdNew: false,
               };
-              console.log(`[WebSocket] Reusing requested session from pool: ${requestedSessionId}`);
+              console.log('[WebSocket] Reusing requested session from pool', {
+                connectionId: ws.data.connectionId,
+                requestedSessionId,
+              });
             } else {
               const persisted = await loadSessionConversations(requestedSessionId, {
                 scope: 'all',
@@ -698,9 +827,16 @@ export async function startWebServer(port: number = 3000) {
                   sessionId: requestedSessionId,
                   createdNew: false,
                 };
-                console.log(`[WebSocket] Restored requested session from memory: ${requestedSessionId}`);
+                console.log('[WebSocket] Restored requested session from memory', {
+                  connectionId: ws.data.connectionId,
+                  requestedSessionId,
+                  restoredTurns: persisted.length,
+                });
               } else {
-                console.warn(`[WebSocket] Requested session not found: ${requestedSessionId}, creating empty requested session`);
+                console.warn('[WebSocket] Requested session not found, creating empty requested session', {
+                  connectionId: ws.data.connectionId,
+                  requestedSessionId,
+                });
                 const requestedAgent = new Agent({
                   llmConfig: requestedSessionLLMConfig ?? ws.data.llmConfig,
                   maxSteps: ws.data.maxSteps,
@@ -725,7 +861,10 @@ export async function startWebServer(port: number = 3000) {
                 sessionId: fallbackSession.sessionId,
                 createdNew: false,
               };
-              console.log(`[WebSocket] Reusing recent session: ${fallbackSession.sessionId}`);
+              console.log('[WebSocket] Reusing recent session', {
+                connectionId: ws.data.connectionId,
+                sessionId: fallbackSession.sessionId,
+              });
             }
           }
 
@@ -742,7 +881,10 @@ export async function startWebServer(port: number = 3000) {
               sessionId: newSessionId,
               createdNew: true,
             };
-            console.log(`[WebSocket] New agent created for session: ${newSessionId}`);
+            console.log('[WebSocket] New agent created', {
+              connectionId: ws.data.connectionId,
+              sessionId: newSessionId,
+            });
           }
 
           const { agent, sessionId, createdNew } = sessionBindResult;
@@ -763,7 +905,11 @@ export async function startWebServer(port: number = 3000) {
             const providerId = resolveProviderId(ws.data.config, ws.data.llmConfig);
             await sendProviderConfig(ws, providerId, ws.data.llmConfig);
           } catch (error) {
-            console.warn('[WebSocket] Failed to send provider config:', error);
+            console.warn('[WebSocket] Failed to send provider config', {
+              connectionId: ws.data.connectionId,
+              sessionId: ws.data.boundSessionId ?? ws.data.requestedSessionId ?? null,
+              error: error instanceof Error ? error.message : String(error),
+            });
           }
 
           const sessionBoundMsg: WebSocketMessage = {
@@ -798,7 +944,11 @@ export async function startWebServer(port: number = 3000) {
               sendWebSocketMessage(ws, historyMsg);
             }
           } catch (error) {
-            console.warn('[WebSocket] Failed to send chat history:', error);
+            console.warn('[WebSocket] Failed to send chat history', {
+              connectionId: ws.data.connectionId,
+              sessionId: ws.data.boundSessionId ?? ws.data.requestedSessionId ?? null,
+              error: error instanceof Error ? error.message : String(error),
+            });
           }
 
           // 只在全新 session 时生成问候语，刷新/恢复不重复
@@ -836,7 +986,12 @@ export async function startWebServer(port: number = 3000) {
           if (data.type === 'confirm_response') {
             const callback = ws.data.pendingConfirmations.get(data.confirmId);
             if (callback) {
-              console.log(`[WebSocket] Received confirm response for ${data.confirmId}: ${data.confirmed}`);
+              console.log('[WebSocket] Received confirm response', {
+                connectionId: ws.data.connectionId,
+                sessionId: ws.data.boundSessionId ?? ws.data.requestedSessionId ?? null,
+                confirmId: data.confirmId,
+                confirmed: data.confirmed,
+              });
               callback(data.confirmed);
               ws.data.pendingConfirmations.delete(data.confirmId);
 
@@ -849,7 +1004,11 @@ export async function startWebServer(port: number = 3000) {
           }
 
           if (data.type === 'stop_request') {
-            console.log(`[WebSocket] Received stop request for message: ${data.messageId}`);
+            console.log('[WebSocket] Received stop request', {
+              connectionId: ws.data.connectionId,
+              sessionId: ws.data.boundSessionId ?? ws.data.requestedSessionId ?? null,
+              messageId: data.messageId,
+            });
             ws.data.shouldStop = true;
             ws.data.currentMessageId = data.messageId;
 
@@ -1127,13 +1286,20 @@ export async function startWebServer(port: number = 3000) {
       },
 
       close(ws: ServerWebSocket<WebSocketData>) {
-        console.log('❌ Client disconnected');
         // 移除 WebSocket 确认回调
         const connectionId = ws.data.connectionId;
+
+        console.log('[WebSocket] Client disconnected', {
+          connectionId,
+          sessionId: ws.data.boundSessionId ?? ws.data.requestedSessionId ?? null,
+        });
+
         if (connectionId) {
           removeWebSocketConfirmCallback(connectionId);
           activeConnectionSessions.delete(connectionId);
-          console.log(`[WebSocket] Removed confirmation callback for ${connectionId}`);
+          console.log('[WebSocket] Confirmation callback removed', {
+            connectionId,
+          });
         }
 
         sweepSessionPool('disconnect');
@@ -1141,10 +1307,24 @@ export async function startWebServer(port: number = 3000) {
     },
   });
 
-  console.log(`✨ SanBot WebUI running at http://localhost:${port}`);
-  console.log(`📡 WebSocket endpoint: ws://localhost:${port}/ws`);
+  let stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(sessionSweepTimer);
+    server.stop(true);
+  };
+
+  console.log(`✨ SanBot WebUI running at http://localhost:${server.port}`);
+  console.log(`📡 WebSocket endpoint: ws://localhost:${server.port}/ws`);
   console.log('');
   console.log('Press Ctrl+C to stop');
+
+  return {
+    server,
+    port: server.port,
+    stop,
+  };
 }
 
 function clampTemperature(value: number | undefined, fallback: number = 0.3): number {
@@ -1291,10 +1471,14 @@ function processNextConfirmation(ws: ServerWebSocket<WebSocketData>): void {
 
   const confirmId = `confirm-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-  console.log(`[WebSocket] Processing queued confirmation: ${confirmId}`);
-  console.log(`[WebSocket] Command:`, command);
-  console.log(`[WebSocket] Level:`, analysis.level);
-  console.log(`[WebSocket] Queue size: ${data.confirmationQueue.length}`);
+  console.log('[WebSocket] Processing queued confirmation', {
+    connectionId: data.connectionId,
+    sessionId: data.boundSessionId ?? data.requestedSessionId ?? null,
+    confirmId,
+    command,
+    level: analysis.level,
+    queueSize: data.confirmationQueue.length,
+  });
 
   // 存储 resolve 函数
   data.pendingConfirmations.set(confirmId, resolve);
@@ -1308,11 +1492,14 @@ function processNextConfirmation(ws: ServerWebSocket<WebSocketData>): void {
       level: analysis.level,
       reasons: analysis.reasons,
     };
-    const msgStr = JSON.stringify(confirmMsg);
-    console.log(`[WebSocket] Sending message:`, msgStr.substring(0, 200) + '...');
-    ws.send(msgStr);
+    sendWebSocketMessage(ws, confirmMsg);
   } catch (err: any) {
-    console.error('[WebSocket] Error sending confirm request:', err);
+    console.error('[WebSocket] Error sending confirm request', {
+      connectionId: data.connectionId,
+      sessionId: data.boundSessionId ?? data.requestedSessionId ?? null,
+      confirmId,
+      error: err?.message ?? String(err),
+    });
     resolve(false);
     // 移除当前项并继续处理下一个
     data.confirmationQueue.shift();
@@ -1337,10 +1524,17 @@ function completeConfirmation(ws: ServerWebSocket<WebSocketData>): void {
 
   // 处理队列中的下一个确认
   if (data.confirmationQueue.length > 0) {
-    console.log(`[WebSocket] Confirmation completed, processing next. Queue size: ${data.confirmationQueue.length}`);
+    console.log('[WebSocket] Confirmation completed, processing next', {
+      connectionId: data.connectionId,
+      sessionId: data.boundSessionId ?? data.requestedSessionId ?? null,
+      queueSize: data.confirmationQueue.length,
+    });
     processNextConfirmation(ws);
   } else {
-    console.log(`[WebSocket] All confirmations processed`);
+    console.log('[WebSocket] All confirmations processed', {
+      connectionId: data.connectionId,
+      sessionId: data.boundSessionId ?? data.requestedSessionId ?? null,
+    });
   }
 }
 

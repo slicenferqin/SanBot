@@ -1,7 +1,16 @@
 import { useConnectionStore, type ConnectionStatus } from '@/stores/connection'
 import { useUIStore } from '@/stores/ui'
 
-function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
+function ConnectionIndicator({ status, pendingSessionId }: { status: ConnectionStatus; pendingSessionId: string | null }) {
+  if (pendingSessionId) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-warning">
+        <span className="w-2 h-2 rounded-full bg-warning animate-pulse" />
+        <span>Switching session...</span>
+      </div>
+    )
+  }
+
   const colors: Record<ConnectionStatus, string> = {
     connected: 'bg-success',
     connecting: 'bg-warning animate-pulse',
@@ -44,6 +53,7 @@ function ModelDisplay() {
 
 export function Header() {
   const status = useConnectionStore((state) => state.status)
+  const pendingSessionId = useConnectionStore((state) => state.pendingSessionId)
   const { toggleSidebar, openDrawer } = useUIStore()
 
   return (
@@ -63,7 +73,7 @@ export function Header() {
 
       <div className="flex items-center gap-4">
         <ModelDisplay />
-        <ConnectionIndicator status={status} />
+        <ConnectionIndicator status={status} pendingSessionId={pendingSessionId} />
 
         <div className="flex items-center gap-1">
           <button

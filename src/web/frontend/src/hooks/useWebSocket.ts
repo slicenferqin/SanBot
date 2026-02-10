@@ -61,7 +61,10 @@ export function useWebSocket() {
   const setStatus = useConnectionStore((state) => state.setStatus)
   const setWs = useConnectionStore((state) => state.setWs)
   const sessionId = useConnectionStore((state) => state.sessionId)
+  const pendingSessionId = useConnectionStore((state) => state.pendingSessionId)
   const setSessionId = useConnectionStore((state) => state.setSessionId)
+  const markSessionBound = useConnectionStore((state) => state.markSessionBound)
+  const clearPendingSessionId = useConnectionStore((state) => state.clearPendingSessionId)
   const setProviderConfig = useConnectionStore((state) => state.setProviderConfig)
   const setModels = useConnectionStore((state) => state.setModels)
 
@@ -215,13 +218,9 @@ export function useWebSocket() {
 
           case 'session_bound': {
             const nextSessionId = normalizeSessionId(data.sessionId)
-            const currentSessionId = normalizeSessionId(useConnectionStore.getState().sessionId)
-
             if (nextSessionId) {
               socketSessionIdRef.current = nextSessionId
-              if (nextSessionId !== currentSessionId) {
-                setSessionId(nextSessionId)
-              }
+              markSessionBound(nextSessionId)
               persistSessionId(nextSessionId)
             }
             break
@@ -256,6 +255,7 @@ export function useWebSocket() {
     }
   }, [
     setSessionId,
+    markSessionBound,
     setStatus,
     setWs,
     addSystemMessage,
@@ -278,6 +278,21 @@ export function useWebSocket() {
       setSessionId(restoredSessionId)
     }
   }, [sessionId, setSessionId])
+
+
+  useEffect(() => {
+    if (!pendingSessionId) return
+
+    const timeout = window.setTimeout(() => {
+      const currentPending = useConnectionStore.getState().pendingSessionId
+      if (currentPending === pendingSessionId) {
+        clearPendingSessionId()
+        addSystemMessage(`Session switch timed out (${pendingSessionId.slice(0, 8)}). Please retry.`)
+      }
+    }, 12000)
+
+    return () => window.clearTimeout(timeout)
+  }, [pendingSessionId, clearPendingSessionId, addSystemMessage])
 
   useEffect(() => {
     const desiredSessionId = normalizeSessionId(sessionId)

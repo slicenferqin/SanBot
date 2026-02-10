@@ -38,7 +38,8 @@ function buildSessionModelLabel(
 export function Sidebar() {
   const { sidebarOpen, setSidebarOpen } = useUIStore()
   const sessionId = useConnectionStore((state) => state.sessionId)
-  const setSessionId = useConnectionStore((state) => state.setSessionId)
+  const pendingSessionId = useConnectionStore((state) => state.pendingSessionId)
+  const requestSessionSwitch = useConnectionStore((state) => state.requestSessionSwitch)
   const providers = useConnectionStore((state) => state.providers)
 
   const clearMessages = useChatStore((state) => state.clearMessages)
@@ -92,6 +93,8 @@ export function Sidebar() {
     return () => window.clearInterval(timer)
   }, [loadSessions])
 
+  const isSwitchingSession = Boolean(pendingSessionId)
+
   const handleSwitchSession = (targetSessionId: string) => {
     if (!targetSessionId || targetSessionId === sessionId) {
       return
@@ -103,7 +106,8 @@ export function Sidebar() {
     }
 
     clearMessages()
-    setSessionId(targetSessionId)
+    requestSessionSwitch(targetSessionId)
+    addSystemMessage(`正在切换到会话 ${targetSessionId.slice(0, 8)}...`)
     closeSidebarOnMobile()
   }
 
@@ -146,6 +150,13 @@ export function Sidebar() {
             Recent (7 days)
           </div>
 
+          {isSwitchingSession && (
+            <div className="mx-2 flex items-center gap-2 rounded-md border border-border-1 bg-bg-2 px-2.5 py-2 text-[11px] text-txt-2">
+              <span className="h-2 w-2 rounded-full bg-warning animate-pulse" />
+              <span className="truncate">Switching session…</span>
+            </div>
+          )}
+
           {loading && (
             <div className="px-3 py-2 text-xs text-txt-3">Loading sessions...</div>
           )}
@@ -161,7 +172,8 @@ export function Sidebar() {
           )}
 
           {!loading && sessions.map((session) => {
-            const isActive = session.sessionId === sessionId
+            const isPending = session.sessionId === pendingSessionId
+            const isActive = session.sessionId === sessionId && !isPending
             const providerName = session.llm
               ? providerNameById.get(session.llm.providerId)
               : undefined
@@ -171,16 +183,27 @@ export function Sidebar() {
               <button
                 key={session.sessionId}
                 onClick={() => handleSwitchSession(session.sessionId)}
-                className={`w-full text-left px-3 py-2 rounded-md border transition-colors ${
-                  isActive
-                    ? 'border-accent bg-bg-2'
-                    : 'border-border-1 hover:bg-bg-2'
+                disabled={isSwitchingSession && !isPending}
+                className={`w-full text-left px-3 py-2 rounded-md border transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                  isPending
+                    ? 'border-warning bg-bg-2'
+                    : isActive
+                      ? 'border-accent bg-bg-2'
+                      : 'border-border-1 hover:bg-bg-2'
                 }`}
                 title={`${session.sessionId}\nStarted: ${formatDateTime(session.startedAt)}\nLast activity: ${formatDateTime(session.lastActivityAt)}`}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-accent' : 'bg-txt-4'}`} />
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        isPending
+                          ? 'bg-warning animate-pulse'
+                          : isActive
+                            ? 'bg-accent'
+                            : 'bg-txt-4'
+                      }`}
+                    />
                     <span className="text-sm text-txt-1 truncate">{session.title}</span>
                   </div>
                   {modelBadge && (
@@ -199,7 +222,7 @@ export function Sidebar() {
 
                 <div className="mt-1 flex items-center justify-between text-[10px] text-txt-3">
                   <span>{session.turns} turns</span>
-                  <span>{formatRelativeTime(session.lastActivityAt)}</span>
+                  <span>{isPending ? 'Switching…' : formatRelativeTime(session.lastActivityAt)}</span>
                 </div>
               </button>
             )

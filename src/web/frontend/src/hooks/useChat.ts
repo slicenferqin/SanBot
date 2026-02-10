@@ -8,6 +8,7 @@ export function useChat() {
   const status = useConnectionStore((state) => state.status)
   const isStreaming = useChatStore((state) => state.isStreaming)
   const pendingConfirmation = useChatStore((state) => state.pendingConfirmation)
+  const pendingSessionId = useConnectionStore((state) => state.pendingSessionId)
   const setConfirmation = useChatStore((state) => state.setConfirmation)
   const clearMessages = useChatStore((state) => state.clearMessages)
   const addUserMessage = useChatStore((state) => state.addUserMessage)
@@ -17,6 +18,7 @@ export function useChat() {
   const sendMessage = useCallback((content: string) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     if (!content.trim()) return
+    if (pendingSessionId) return
 
     // Add user message locally for immediate feedback
     addUserMessage(content.trim())
@@ -25,7 +27,7 @@ export function useChat() {
       type: 'chat',
       content: content.trim(),
     }))
-  }, [ws, addUserMessage])
+  }, [ws, addUserMessage, pendingSessionId])
 
   const sendCommand = useCallback((command: string) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return
